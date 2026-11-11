@@ -1,0 +1,12 @@
+{
+    "id": "@CMAKE_PROJECT_NAME@",
+    "name": "@CMAKE_PROJECT_NAME@",
+    "display_name": "@PLUGIN_DISPLAY_NAME@",
+    "version": "@CMAKE_PROJECT_VERSION@",
+    "description": "Redraws any video source as a live grid of characters.",
+    "urls": {
+        "repository": "@PLUGIN_WEBSITE@",
+        "website": "@PLUGIN_WEBSITE@",
+        "support": "@PLUGIN_WEBSITE@/issues"
+    }
+}
