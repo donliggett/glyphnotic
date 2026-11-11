@@ -36,7 +36,9 @@ import reference as ref
 
 ROOT = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", ".."))
 STILLS = os.path.join(ROOT, "tests", "stills")
-MOSAIC = ["--filter", "glyphnotic_mosaic", "--settings", json.dumps({"charset": "ascii"})]
+# Motion off (Soften blurs; the rest act over time), as in Phase 1.
+MOSAIC = ["--filter", "glyphnotic_mosaic", "--settings",
+          json.dumps({"charset": "ascii", "soften": 0, "hold": 0, "settle": 0, "boil": 0})]
 CC = ["--filter", "color_filter_v2", "--settings",
       json.dumps({"gamma": 0.4, "saturation": 0.6, "hue_shift": 40.0, "contrast": 0.2})]
 

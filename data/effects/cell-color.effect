@@ -16,6 +16,11 @@
 //   16) and unlit samples (slots 0..7); a side with no samples takes the
 //   other side's slot.
 //
+// Settle: each color then blends with the same texel of the previous frame,
+// c = c_new + (c_prev - c_new) * settle, in OKLab (written so that an
+// unchanged color stays exactly the same). Not on a light jump or a fresh
+// grid, where Settle restarts.
+//
 // Output: OKLab in rgb; a = 1 for an opaque cell, 0 for a transparent one.
 
 #include "cells.effect"
@@ -25,6 +30,12 @@ uniform texture2d scores; // Score pass output; .y is the shown glyph
 uniform texture2d stats;  // Cell stats output; rgb mean OKLab, a mean alpha
 uniform float keep_transparency;
 
+// Settle
+uniform texture2d prev_colors; // the previous frame's output
+uniform texture2d frame_state; // Levels output; texel (1, 0).x = light jump
+uniform float history;         // 1: prev_colors is the previous frame of this grid
+uniform float settle;          // 0..0.95
+
 // Ink
 uniform float ink_lightness;
 uniform float ink_cell; // 1: the cell's own (a, b) times saturation; 0: ink_ab
@@ -33,6 +44,7 @@ uniform float saturation;
 uniform float background_tint;
 
 struct CellTexel {
+	int2 texel;
 	int2 cell;
 	bool want_background;
 };
@@ -41,9 +53,18 @@ CellTexel cell_texel(float2 uv)
 {
 	int2 t = texel_of(uv, cell_count * float2(2.0, 1.0));
 	CellTexel c;
+	c.texel = t;
 	c.cell = int2(t.x / 2, t.y);
 	c.want_background = (t.x - c.cell.x * 2) == 1;
 	return c;
+}
+
+// The pass's output for a texel: its color after Settle, and the cell's opacity.
+float4 settled(CellTexel c, float3 lab, float opacity)
+{
+	if (settle > 0.0 && history > 0.5 && frame_state.Load(int3(1, 0, 0)).x < 0.5)
+		lab = lab + (prev_colors.Load(int3(c.texel, 0)).rgb - lab) * settle;
+	return float4(lab, opacity);
 }
 
 float cell_opacity(int2 cell)
@@ -98,7 +119,7 @@ float4 PSColorMosaic(VertData v_in) : TARGET
 	float3 text = (r.n_on > 0.0) ? (r.s_on / r.n_on) : (s_off / max(n_off, 1.0));
 	float3 back = (n_off > 0.0) ? (s_off / n_off) : text;
 	float3 lab = shift + (c.want_background ? back : text);
-	return float4(lab, cell_opacity(c.cell));
+	return settled(c, lab, cell_opacity(c.cell));
 }
 
 float4 PSColorInk(VertData v_in) : TARGET
@@ -110,7 +131,7 @@ float4 PSColorInk(VertData v_in) : TARGET
 		lab = (background_tint > 0.5) ? float3(0.6 * mean.x, mean.y, mean.z) : float3(0.0, 0.0, 0.0);
 	else
 		lab = float3(ink_lightness, (ink_cell > 0.5) ? mean.yz * saturation : ink_ab);
-	return float4(lab, cell_opacity(c.cell));
+	return settled(c, lab, cell_opacity(c.cell));
 }
 
 float4 PSColorConsole(VertData v_in) : TARGET
@@ -130,7 +151,7 @@ float4 PSColorConsole(VertData v_in) : TARGET
 		kt = kb;
 	if (n_off <= 0.0)
 		kb = kt;
-	return float4(palette_color(c.want_background ? kb : kt), cell_opacity(c.cell));
+	return settled(c, palette_color(c.want_background ? kb : kt), cell_opacity(c.cell));
 }
 
 technique Mosaic

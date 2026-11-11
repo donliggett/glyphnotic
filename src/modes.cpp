@@ -266,6 +266,18 @@ Settings read_settings(Mode mode, obs_data_t *s)
 	r.edges_transparent = is(obs_data_get_string(s, key::kEdges), "transparent");
 	r.keep_transparency = obs_data_get_bool(s, key::kKeepTransparency);
 
+	auto clamp_int = [&](const char *k, int lo, int hi) {
+		const long long v = obs_data_get_int(s, k);
+		return static_cast<int>(v < lo ? lo : v > hi ? hi : v);
+	};
+	r.soften = obs_data_get_double(s, key::kSoften);
+	r.soften = r.soften < 0.0 ? 0.0 : r.soften > kMaxSoften ? kMaxSoften : r.soften;
+	r.hold = clamp_int(key::kHold, 0, 100);
+	r.settle = clamp_int(key::kSettle, 0, 95);
+	r.boil = clamp_int(key::kBoil, 0, 100);
+	r.boil_spread = clamp_int(key::kBoilSpread, 0, 100);
+	r.boil_linger = clamp_int(key::kBoilLinger, 1, 12);
+
 	if (mode == Mode::Ink) {
 		const char *ink = obs_data_get_string(s, key::kInkColor);
 		r.ink_color = InkColor::Cell;
@@ -372,6 +384,23 @@ void add_properties(obs_properties_t *props, TypeData *td, obs_property_clicked_
 	obs_property_list_add_string(edges, obs_module_text("Glyphnotic.Edges.Transparent"), "transparent");
 	obs_properties_add_bool(grid, key::kKeepTransparency, obs_module_text("Glyphnotic.KeepTransparency"));
 	obs_properties_add_group(props, "group_grid", obs_module_text("Glyphnotic.Group.Grid"), OBS_GROUP_NORMAL, grid);
+
+	// Motion
+	obs_properties_t *motion = obs_properties_create();
+	obs_property_t *soften = watch(add_slider(motion, key::kSoften, "Glyphnotic.Soften", 0.0, kMaxSoften, 0.1));
+	obs_property_float_set_suffix(soften, " px");
+	watch(obs_properties_add_int_slider(motion, key::kHold, obs_module_text("Glyphnotic.Hold"), 0, 100, 1));
+	obs_property_t *settle = watch(
+		obs_properties_add_int_slider(motion, key::kSettle, obs_module_text("Glyphnotic.Settle"), 0, 95, 1));
+	obs_property_int_set_suffix(settle, "%");
+	watch(obs_properties_add_int_slider(motion, key::kBoil, obs_module_text("Glyphnotic.Boil"), 0, 100, 1));
+	watch(obs_properties_add_int_slider(motion, key::kBoilSpread, obs_module_text("Glyphnotic.BoilSpread"), 0, 100,
+					    1));
+	obs_property_t *linger = watch(obs_properties_add_int_slider(
+		motion, key::kBoilLinger, obs_module_text("Glyphnotic.BoilLinger"), 1, 12, 1));
+	obs_property_int_set_suffix(linger, obs_module_text("Glyphnotic.FramesSuffix"));
+	obs_properties_add_group(props, "group_motion", obs_module_text("Glyphnotic.Group.Motion"), OBS_GROUP_NORMAL,
+				 motion);
 
 	if (td->mode == Mode::Ink) {
 		obs_properties_t *ink = obs_properties_create();

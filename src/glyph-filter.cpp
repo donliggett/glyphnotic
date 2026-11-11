@@ -4,16 +4,22 @@
 // the mode). Each frame runs a short chain of libobs render passes (see
 // docs/SPEC.md, Render passes):
 //
-//   Sample      filter input -> OKLab + alpha, cellsX*8 x cellsY*16
+//   Soften      (Soften > 0) the input blurred along rows, at source size
+//   Sample      filter input -> OKLab + alpha, cellsX*8 x cellsY*16 (with
+//               Soften, blurred along columns as it reads)
 //   Cell stats  mean OKLab and alpha per cell
-//   Reduce      (Ink) sums of the cells' lightness, down to 1x1
-//   Levels      (Ink) this frame's lo/hi, eased against the last (ping-pong 1x1)
+//   Reduce      sums of the cells' lightness and of the cells whose lightness
+//               jumped since the last frame, down to 1x1
+//   Levels      (2x1) the light jump, and Ink's lo/hi eased against the last
 //   Lightness   (Ink) each sample's stretched and shaped L'
-//   Score       best glyph per cell
-//   Color       text and background color per cell (double-width target)
+//   Score       held and shown glyph per cell: Hold and Boil
+//   Color       text and background color per cell (double-width target),
+//               blended with the last frame's by Settle
 //   Draw        the character grid at source size, into OBS's target
 //
-// Settings, properties and looks live in modes.cpp; palettes and capture's
+// Cell stats, Levels, Score and Color keep the previous frame (ping-pong
+// pairs, `cur` holds the latest). Settings, properties and looks live in
+// modes.cpp; the motion formulas in motion.hpp; palettes and capture's
 // k-means in palette.cpp.
 
 #include "glyph-filter.hpp"
@@ -21,6 +27,7 @@
 #include "font.hpp"
 #include "grid.hpp"
 #include "modes.hpp"
+#include "motion.hpp"
 #include "palette.hpp"
 #include "presets.hpp"
 
@@ -32,6 +39,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -51,6 +59,7 @@ constexpr int kCaptureWidth = 160; // Capture palette reads back about 160x90
 constexpr uint64_t kRefreshDelayNs = 600'000'000;
 
 struct Effects {
+	gs_effect_t *soften = nullptr;
 	gs_effect_t *sample = nullptr;
 	gs_effect_t *stats = nullptr;
 	gs_effect_t *levels = nullptr;
@@ -60,7 +69,10 @@ struct Effects {
 	gs_effect_t *draw = nullptr;
 	gs_effect_t *capture = nullptr;
 
-	bool ok() const { return sample && stats && levels && lightness && score && color && draw && capture; }
+	bool ok() const
+	{
+		return soften && sample && stats && levels && lightness && score && color && draw && capture;
+	}
 };
 
 struct GlyphFilter {
@@ -71,13 +83,15 @@ struct GlyphFilter {
 
 	// Graphics resources, touched only with the graphics context entered.
 	Effects fx;
+	gs_texrender_t *tr_soften = nullptr;
 	gs_texrender_t *tr_sample = nullptr;
-	gs_texrender_t *tr_stats = nullptr;
 	gs_texrender_t *tr_lightness = nullptr;
-	gs_texrender_t *tr_score = nullptr;
-	gs_texrender_t *tr_color = nullptr;
 	gs_texrender_t *tr_capture = nullptr;
-	gs_texrender_t *tr_levels[2] = {nullptr, nullptr}; // ping-pong
+	// Ping-pong pairs: [cur] holds the latest frame, [1 - cur] the one before.
+	gs_texrender_t *tr_stats[2] = {nullptr, nullptr};
+	gs_texrender_t *tr_levels[2] = {nullptr, nullptr}; // 2x1: Ink's levels, the light jump
+	gs_texrender_t *tr_score[2] = {nullptr, nullptr};
+	gs_texrender_t *tr_color[2] = {nullptr, nullptr};
 	std::vector<gs_texrender_t *> tr_reduce;
 	gs_texture_t *atlas = nullptr;
 	Charset atlas_charset; // the set uploaded to `atlas`
@@ -96,13 +110,19 @@ struct GlyphFilter {
 	std::atomic<uint64_t> refresh_at_ns{0}; // when to refresh the properties window; 0 = not waiting
 
 	// Render-thread state.
-	int levels_cur = 0;        // tr_levels[levels_cur] holds the latest levels
-	bool levels_valid = false; // false: the next frame snaps its levels
+	int cur = 0;          // which texrender of each pair holds the latest frame
+	bool history = false; // false: the next frame starts the grid's history over
 	int last_cells_x = -1, last_cells_y = -1, last_scale = -1;
 	uint64_t frame = 0;
+	uint32_t seed = 0; // Boil's per-instance seed
 	std::atomic<float> tick_seconds{0.0f};
 
 	std::atomic<bool> dump_requested{false};
+	std::atomic<bool> record_requested{false};
+	FILE *record_file = nullptr; // debug builds: per-frame grid recording
+	std::string record_path;
+	int record_left = 0;
+	bool record_colors = false;
 	std::atomic<bool> capture_requested{false};
 	std::atomic<bool> capture_running{false};
 	std::thread capture_thread;
@@ -127,13 +147,15 @@ gs_effect_t *load_effect(const char *name)
 
 void destroy_graphics(GlyphFilter *f)
 {
-	for (gs_effect_t *e : {f->fx.sample, f->fx.stats, f->fx.levels, f->fx.lightness, f->fx.score, f->fx.color,
-			       f->fx.draw, f->fx.capture})
+	for (gs_effect_t *e : {f->fx.soften, f->fx.sample, f->fx.stats, f->fx.levels, f->fx.lightness, f->fx.score,
+			       f->fx.color, f->fx.draw, f->fx.capture})
 		gs_effect_destroy(e);
 	f->fx = Effects{};
-	for (gs_texrender_t *t : {f->tr_sample, f->tr_stats, f->tr_lightness, f->tr_score, f->tr_color, f->tr_capture,
-				  f->tr_levels[0], f->tr_levels[1]})
+	for (gs_texrender_t *t : {f->tr_soften, f->tr_sample, f->tr_lightness, f->tr_capture})
 		gs_texrender_destroy(t);
+	for (int i = 0; i < 2; i++)
+		for (gs_texrender_t *t : {f->tr_stats[i], f->tr_levels[i], f->tr_score[i], f->tr_color[i]})
+			gs_texrender_destroy(t);
 	for (gs_texrender_t *t : f->tr_reduce)
 		gs_texrender_destroy(t);
 	f->tr_reduce.clear();
@@ -215,6 +237,15 @@ bool dump_clicked(obs_properties_t *props, obs_property_t *property, void *data)
 		static_cast<GlyphFilter *>(data)->dump_requested = true;
 	return false;
 }
+
+bool record_clicked(obs_properties_t *props, obs_property_t *property, void *data)
+{
+	UNUSED_PARAMETER(props);
+	UNUSED_PARAMETER(property);
+	if (data)
+		static_cast<GlyphFilter *>(data)->record_requested = true;
+	return false;
+}
 #endif
 
 bool capture_clicked(obs_properties_t *props, obs_property_t *property, void *data)
@@ -233,6 +264,8 @@ obs_properties_t *filter_get_properties(void *data, void *type_data)
 	add_properties(props, td, capture_clicked, data);
 #ifdef GLYPHNOTIC_DEBUG_TOOLS
 	obs_properties_add_button2(props, kPropDumpGrid, obs_module_text("Glyphnotic.DumpGrid"), dump_clicked, data);
+	obs_properties_add_button2(props, kPropRecordGrid, obs_module_text("Glyphnotic.RecordGrid"), record_clicked,
+				   data);
 #endif
 	return props;
 }
@@ -256,7 +289,14 @@ void *filter_create(obs_data_t *settings, obs_source_t *source)
 	f->mode = td->mode;
 	f->font = td->font;
 
+	// Boil's seed: different for every instance, so no two boil in step.
+	uint64_t z = os_gettime_ns() ^ reinterpret_cast<uintptr_t>(f);
+	z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ull;
+	z = (z ^ (z >> 27)) * 0x94D049BB133111EBull;
+	f->seed = static_cast<uint32_t>((z ^ (z >> 31)) & 0x7FFFFFFF);
+
 	obs_enter_graphics();
+	f->fx.soften = load_effect("soften.effect");
 	f->fx.sample = load_effect("sample.effect");
 	f->fx.stats = load_effect("stats.effect");
 	f->fx.levels = load_effect("levels.effect");
@@ -265,14 +305,16 @@ void *filter_create(obs_data_t *settings, obs_source_t *source)
 	f->fx.color = load_effect("cell-color.effect");
 	f->fx.draw = load_effect("draw.effect");
 	f->fx.capture = load_effect("capture.effect");
+	f->tr_soften = float_target();
 	f->tr_sample = float_target();
-	f->tr_stats = float_target();
 	f->tr_lightness = float_target();
-	f->tr_score = float_target();
-	f->tr_color = float_target();
 	f->tr_capture = float_target();
-	f->tr_levels[0] = float_target();
-	f->tr_levels[1] = float_target();
+	for (int i = 0; i < 2; i++) {
+		f->tr_stats[i] = float_target();
+		f->tr_levels[i] = float_target();
+		f->tr_score[i] = float_target();
+		f->tr_color[i] = float_target();
+	}
 	obs_leave_graphics();
 
 	if (!f->fx.ok())
@@ -293,6 +335,8 @@ void filter_destroy(void *data)
 	auto *f = static_cast<GlyphFilter *>(data);
 	if (f->capture_thread.joinable())
 		f->capture_thread.join();
+	if (f->record_file)
+		fclose(f->record_file);
 	obs_enter_graphics();
 	destroy_graphics(f);
 	obs_leave_graphics();
@@ -365,7 +409,20 @@ bool run_pass(gs_texrender_t *tr, gs_effect_t *fx, const char *technique, int w,
 	return true;
 }
 
-// Score and Color technique for a mode: Poster scores and colors like Mosaic.
+// Score's score_mode: 0 Mosaic (and Poster), 1 Ink, 2 Console.
+int score_mode(Mode mode)
+{
+	switch (mode) {
+	case Mode::Ink:
+		return 1;
+	case Mode::Console:
+		return 2;
+	default:
+		return 0;
+	}
+}
+
+// Color's technique for a mode: Poster colors like Mosaic.
 const char *mode_technique(Mode mode)
 {
 	switch (mode) {
@@ -426,10 +483,13 @@ gs_texrender_t *reduce_target(GlyphFilter *f, size_t i)
 	return f->tr_reduce[i];
 }
 
-// Reduce and Levels: this frame's lo/hi into tr_levels[levels_cur].
-bool run_levels(GlyphFilter *f, const Grid &grid, const Settings &s)
+// Reduce and Levels: this frame's state into tr_levels[next] (2x1): the
+// light jump, and Ink's lo/hi.
+bool run_frame_state(GlyphFilter *f, const Grid &grid, const Settings &s, int next)
 {
-	gs_texture_t *src = gs_texrender_get_texture(f->tr_stats);
+	const int prev = 1 - next;
+	gs_texture_t *src = gs_texrender_get_texture(f->tr_stats[next]);
+	gs_texture_t *prev_stats = gs_texrender_get_texture(f->tr_stats[prev]);
 	int sw = grid.cells_x, sh = grid.cells_y;
 	const char *tech = "ReduceStats";
 	size_t i = 0;
@@ -444,6 +504,9 @@ bool run_levels(GlyphFilter *f, const Grid &grid, const Settings &s)
 			     set_vec2(f->fx.levels, "dst_size", static_cast<float>(dw), static_cast<float>(dh));
 			     set_int(f->fx.levels, "block", kReduceBlock);
 			     set_flag(f->fx.levels, "keep_transparency", s.keep_transparency);
+			     set_tex(f->fx.levels, "prev_stats", prev_stats);
+			     set_flag(f->fx.levels, "have_prev", f->history);
+			     set_float(f->fx.levels, "jump_delta", static_cast<float>(kLightJumpDelta));
 		     });
 		src = gs_texrender_get_texture(tr);
 		sw = dw;
@@ -451,28 +514,35 @@ bool run_levels(GlyphFilter *f, const Grid &grid, const Settings &s)
 		tech = "ReduceSum";
 	} while (ok && (sw > 1 || sh > 1));
 
-	// Ease toward this frame's target: 1 - exp(-dt / adapt speed); 1 snaps.
+	// Ease toward this frame's target: 1 - exp(-dt / adapt speed); 1 snaps
+	// (and so does a light jump, in the shader).
 	const float dt = f->tick_seconds;
-	const float ease = f->levels_valid ? 1.0f - std::exp(-dt / static_cast<float>(s.adapt_speed)) : 1.0f;
-	const int next = 1 - f->levels_cur;
-	gs_texture_t *prev = gs_texrender_get_texture(f->tr_levels[f->levels_cur]);
-	ok = ok && run_pass(f->tr_levels[next], f->fx.levels, "Levels", 1, 1, [&] {
+	const float ease = f->history ? 1.0f - std::exp(-dt / static_cast<float>(s.adapt_speed)) : 1.0f;
+	gs_texture_t *prev_levels = gs_texrender_get_texture(f->tr_levels[prev]);
+	ok = ok && run_pass(f->tr_levels[next], f->fx.levels, "Levels", 2, 1, [&] {
 		     set_tex(f->fx.levels, "sums", src);
-		     set_tex(f->fx.levels, "prev", prev);
+		     set_tex(f->fx.levels, "prev", prev_levels);
 		     set_flag(f->fx.levels, "levels_auto", s.levels_auto);
 		     set_float(f->fx.levels, "black_point", static_cast<float>(s.black_point));
 		     set_float(f->fx.levels, "white_point", static_cast<float>(s.white_point));
 		     set_float(f->fx.levels, "ease", ease);
+		     set_flag(f->fx.levels, "have_prev", f->history);
+		     set_float(f->fx.levels, "cell_total", static_cast<float>(grid.cells_x * grid.cells_y));
+		     set_float(f->fx.levels, "jump_share", static_cast<float>(kLightJumpShare));
 	     });
-	if (ok) {
-		f->levels_cur = next;
-		f->levels_valid = true;
-	}
 	return ok;
+}
+
+// Boil's chance per frame, from OBS's frame rate.
+float frame_boil_chance(int boil)
+{
+	const double frame_seconds = static_cast<double>(obs_get_frame_interval_ns()) / 1e9;
+	return static_cast<float>(boil_chance(boil, frame_seconds));
 }
 
 void start_capture(GlyphFilter *f, const Grid &grid);
 void dump_grid(GlyphFilter *f, const Grid &grid, const Settings &s, uint32_t source_w, uint32_t source_h);
+void record_frame(GlyphFilter *f, const Grid &grid);
 
 // ---------------------------------------------------------------------------
 // Render
@@ -499,7 +569,7 @@ void filter_video_render(void *data, gs_effect_t *effect)
 	// A settings change or a new grid size starts the grid's history over.
 	if (reset || grid.cells_x != f->last_cells_x || grid.cells_y != f->last_cells_y ||
 	    grid.scale != f->last_scale) {
-		f->levels_valid = false;
+		f->history = false;
 		f->last_cells_x = grid.cells_x;
 		f->last_cells_y = grid.cells_y;
 		f->last_scale = grid.scale;
@@ -529,46 +599,72 @@ void filter_video_render(void *data, gs_effect_t *effect)
 	gs_enable_blending(false);
 	const bool prev_srgb = gs_framebuffer_srgb_enabled();
 
-	// Sample: OBS draws its input texture with our effect. The filter doesn't
-	// declare OBS_SOURCE_SRGB, so OBS binds the 8-bit texture without its sRGB
-	// view and with framebuffer sRGB off: the shader reads the stored
-	// sRGB-encoded values and decodes them itself, exactly once.
-	bool ok = false;
-	gs_texrender_reset(f->tr_sample);
-	if (gs_texrender_begin(f->tr_sample, static_cast<uint32_t>(grid.sample_w),
-			       static_cast<uint32_t>(grid.sample_h))) {
-		gs_ortho(0.0f, static_cast<float>(grid.sample_w), 0.0f, static_cast<float>(grid.sample_h), -100.0f,
-			 100.0f);
+	// OBS draws its input texture with one of our effects: Sample's, or with
+	// Soften on, Soften's row blur. The filter doesn't declare
+	// OBS_SOURCE_SRGB, so OBS binds the 8-bit texture without its sRGB view and
+	// with framebuffer sRGB off: the shaders read the stored sRGB-encoded
+	// values, and Sample decodes them itself, exactly once.
+	const int radius = soften_radius(s.soften);
+	const auto sw = static_cast<uint32_t>(grid.sample_w), sh = static_cast<uint32_t>(grid.sample_h);
+	auto set_sample_params = [&] {
 		set_vec2(f->fx.sample, "sample_size", static_cast<float>(grid.sample_w),
 			 static_cast<float>(grid.sample_h));
 		set_vec2(f->fx.sample, "grid_offset", static_cast<float>(grid.offset_x),
 			 static_cast<float>(grid.offset_y));
 		set_int(f->fx.sample, "cell_scale", grid.scale);
-		obs_source_process_filter_tech_end(f->context, f->fx.sample, static_cast<uint32_t>(grid.sample_w),
-						   static_cast<uint32_t>(grid.sample_h), "Draw");
-		gs_texrender_end(f->tr_sample);
-		ok = true;
+		// Direct3D wants every parameter a technique's shaders reference set.
+		set_vec2(f->fx.sample, "source_size", static_cast<float>(w), static_cast<float>(h));
+		set_float(f->fx.sample, "sigma", static_cast<float>(s.soften));
+		set_int(f->fx.sample, "radius", radius);
+	};
+	bool ok = false;
+	if (radius == 0) {
+		gs_texrender_reset(f->tr_sample);
+		if (gs_texrender_begin(f->tr_sample, sw, sh)) {
+			gs_ortho(0.0f, static_cast<float>(sw), 0.0f, static_cast<float>(sh), -100.0f, 100.0f);
+			set_sample_params();
+			obs_source_process_filter_tech_end(f->context, f->fx.sample, sw, sh, "Draw");
+			gs_texrender_end(f->tr_sample);
+			ok = true;
+		}
+		gs_enable_framebuffer_srgb(false);
+	} else {
+		gs_texrender_reset(f->tr_soften);
+		if (gs_texrender_begin(f->tr_soften, w, h)) {
+			gs_ortho(0.0f, static_cast<float>(w), 0.0f, static_cast<float>(h), -100.0f, 100.0f);
+			set_vec2(f->fx.soften, "source_size", static_cast<float>(w), static_cast<float>(h));
+			set_float(f->fx.soften, "sigma", static_cast<float>(s.soften));
+			set_int(f->fx.soften, "radius", radius);
+			obs_source_process_filter_tech_end(f->context, f->fx.soften, w, h, "BlurH");
+			gs_texrender_end(f->tr_soften);
+			ok = true;
+		}
+		gs_enable_framebuffer_srgb(false);
+		ok = ok && run_pass(f->tr_sample, f->fx.sample, "DrawSoft", grid.sample_w, grid.sample_h, [&] {
+			     set_sample_params();
+			     set_tex(f->fx.sample, "image", gs_texrender_get_texture(f->tr_soften));
+		     });
 	}
-	gs_enable_framebuffer_srgb(false);
 
+	// Each pass of a ping-pong pair writes [next] and reads the last frame from [cur].
+	const int next = 1 - f->cur;
 	gs_texture_t *samples = gs_texrender_get_texture(f->tr_sample);
 	const auto cells_x = static_cast<float>(grid.cells_x);
 	const auto cells_y = static_cast<float>(grid.cells_y);
-	const char *tech = mode_technique(f->mode);
 
-	ok = ok && run_pass(f->tr_stats, f->fx.stats, "Draw", grid.cells_x, grid.cells_y, [&] {
+	ok = ok && run_pass(f->tr_stats[next], f->fx.stats, "Draw", grid.cells_x, grid.cells_y, [&] {
 		     set_tex(f->fx.stats, "samples", samples);
 		     set_vec2(f->fx.stats, "cell_count", cells_x, cells_y);
 	     });
+	ok = ok && run_frame_state(f, grid, s, next);
+	gs_texture_t *frame_state = gs_texrender_get_texture(f->tr_levels[next]);
 
 	// Ink scores lightness only: its Score pass reads L' instead of the samples.
 	gs_texture_t *score_input = samples;
 	if (f->mode == Mode::Ink) {
-		ok = ok && run_levels(f, grid, s);
-		gs_texture_t *levels = gs_texrender_get_texture(f->tr_levels[f->levels_cur]);
 		ok = ok && run_pass(f->tr_lightness, f->fx.lightness, "Draw", grid.sample_w, grid.sample_h, [&] {
 			     set_tex(f->fx.lightness, "samples", samples);
-			     set_tex(f->fx.lightness, "levels", levels);
+			     set_tex(f->fx.lightness, "levels", frame_state);
 			     set_vec2(f->fx.lightness, "sample_size", static_cast<float>(grid.sample_w),
 				      static_cast<float>(grid.sample_h));
 			     set_float(f->fx.lightness, "ink_lightness", static_cast<float>(s.ink_lightness));
@@ -577,22 +673,34 @@ void filter_video_render(void *data, gs_effect_t *effect)
 		score_input = gs_texrender_get_texture(f->tr_lightness);
 	}
 
-	ok = ok && run_pass(f->tr_score, f->fx.score, tech, grid.cells_x, grid.cells_y, [&] {
+	ok = ok && run_pass(f->tr_score[next], f->fx.score, "Draw", grid.cells_x, grid.cells_y, [&] {
 		     set_tex(f->fx.score, "samples", score_input);
 		     set_tex(f->fx.score, "atlas", f->atlas);
 		     set_tex(f->fx.score, "palette", f->palette_tex);
 		     set_vec2(f->fx.score, "cell_count", cells_x, cells_y);
 		     set_int(f->fx.score, "glyph_count", static_cast<int>(f->atlas_charset.size()));
+		     set_int(f->fx.score, "score_mode", score_mode(f->mode));
 		     set_float(f->fx.score, "ink_lightness", static_cast<float>(s.ink_lightness));
 		     set_float(f->fx.score, "shape", static_cast<float>(s.shape));
 		     set_float(f->fx.score, "max_n_on", f->atlas_max_n_on);
+		     set_tex(f->fx.score, "prev_scores", gs_texrender_get_texture(f->tr_score[f->cur]));
+		     set_tex(f->fx.score, "frame_state", frame_state);
+		     set_flag(f->fx.score, "history", f->history);
+		     set_float(f->fx.score, "hold_threshold", static_cast<float>(hold_threshold(f->mode, s.hold)));
+		     set_float(f->fx.score, "boil_chance", frame_boil_chance(s.boil));
+		     set_float(f->fx.score, "boil_spread", static_cast<float>(boil_spread_share(s.boil_spread)));
+		     set_int(f->fx.score, "boil_linger", s.boil_linger);
+		     set_int(f->fx.score, "seed", static_cast<int>(f->seed));
+		     set_int(f->fx.score, "frame_index", static_cast<int>(f->frame & 0x7FFFFFFF));
 	     });
-	ok = ok && run_pass(f->tr_color, f->fx.color, tech, grid.cells_x * 2, grid.cells_y, [&] {
+	gs_texture_t *scores = gs_texrender_get_texture(f->tr_score[next]);
+	ok = ok &&
+	     run_pass(f->tr_color[next], f->fx.color, mode_technique(f->mode), grid.cells_x * 2, grid.cells_y, [&] {
 		     set_tex(f->fx.color, "samples", samples);
 		     set_tex(f->fx.color, "atlas", f->atlas);
 		     set_tex(f->fx.color, "palette", f->palette_tex);
-		     set_tex(f->fx.color, "scores", gs_texrender_get_texture(f->tr_score));
-		     set_tex(f->fx.color, "stats", gs_texrender_get_texture(f->tr_stats));
+		     set_tex(f->fx.color, "scores", scores);
+		     set_tex(f->fx.color, "stats", gs_texrender_get_texture(f->tr_stats[next]));
 		     set_vec2(f->fx.color, "cell_count", cells_x, cells_y);
 		     set_flag(f->fx.color, "keep_transparency", s.keep_transparency);
 		     set_float(f->fx.color, "ink_lightness", static_cast<float>(s.ink_lightness));
@@ -600,6 +708,10 @@ void filter_video_render(void *data, gs_effect_t *effect)
 		     set_vec2(f->fx.color, "ink_ab", static_cast<float>(s.ink_a), static_cast<float>(s.ink_b));
 		     set_float(f->fx.color, "saturation", static_cast<float>(s.saturation));
 		     set_flag(f->fx.color, "background_tint", s.background_tint);
+		     set_tex(f->fx.color, "prev_colors", gs_texrender_get_texture(f->tr_color[f->cur]));
+		     set_tex(f->fx.color, "frame_state", frame_state);
+		     set_flag(f->fx.color, "history", f->history);
+		     set_float(f->fx.color, "settle", static_cast<float>(s.settle / 100.0));
 	     });
 
 	if (ok && f->mode == Mode::Console && f->capture_requested.exchange(false))
@@ -608,12 +720,16 @@ void filter_video_render(void *data, gs_effect_t *effect)
 	gs_blend_state_pop();
 	gs_enable_framebuffer_srgb(prev_srgb);
 
+	// A frame that failed part way leaves the pairs out of step: start over.
+	f->history = ok;
 	if (!ok)
 		return;
+	f->cur = next;
 	f->frame++;
 
 	if (f->dump_requested.exchange(false))
 		dump_grid(f, grid, s, w, h);
+	record_frame(f, grid);
 
 	// Draw into OBS's target. OBS turns linear sRGB off for filters that
 	// aren't OBS_SOURCE_SRGB, so the shader writes sRGB-encoded values; the
@@ -625,8 +741,8 @@ void filter_video_render(void *data, gs_effect_t *effect)
 
 	gs_effect_t *fx = f->fx.draw;
 	set_tex(fx, "atlas", f->atlas);
-	set_tex(fx, "scores", gs_texrender_get_texture(f->tr_score));
-	set_tex(fx, "colors", gs_texrender_get_texture(f->tr_color));
+	set_tex(fx, "scores", scores);
+	set_tex(fx, "colors", gs_texrender_get_texture(f->tr_color[f->cur]));
 	set_vec2(fx, "source_size", static_cast<float>(w), static_cast<float>(h));
 	set_vec2(fx, "grid_offset", static_cast<float>(grid.offset_x), static_cast<float>(grid.offset_y));
 	set_vec2(fx, "grid_size", static_cast<float>(grid.width_px()), static_cast<float>(grid.height_px()));
@@ -758,11 +874,10 @@ void dump_grid(GlyphFilter *f, const Grid &grid, const Settings &s, uint32_t sou
 	const auto cx = static_cast<uint32_t>(grid.cells_x);
 	const auto cy = static_cast<uint32_t>(grid.cells_y);
 	std::vector<float> scores, colors, stats, levels;
-	if (!read_texture(gs_texrender_get_texture(f->tr_score), cx, cy, scores) ||
-	    !read_texture(gs_texrender_get_texture(f->tr_color), cx * 2, cy, colors) ||
-	    !read_texture(gs_texrender_get_texture(f->tr_stats), cx, cy, stats) ||
-	    (f->mode == Mode::Ink &&
-	     !read_texture(gs_texrender_get_texture(f->tr_levels[f->levels_cur]), 1, 1, levels))) {
+	if (!read_texture(gs_texrender_get_texture(f->tr_score[f->cur]), cx, cy, scores) ||
+	    !read_texture(gs_texrender_get_texture(f->tr_color[f->cur]), cx * 2, cy, colors) ||
+	    !read_texture(gs_texrender_get_texture(f->tr_stats[f->cur]), cx, cy, stats) ||
+	    !read_texture(gs_texrender_get_texture(f->tr_levels[f->cur]), 2, 1, levels)) {
 		obs_log(LOG_WARNING, "grid dump: texture readback failed");
 		return;
 	}
@@ -810,7 +925,7 @@ void dump_grid(GlyphFilter *f, const Grid &grid, const Settings &s, uint32_t sou
 	static const char *kInkNames[] = {"cell", "green", "amber", "white", "custom"};
 
 	obs_data_t *source_settings = obs_source_get_settings(f->context);
-	fprintf(file, "{\"version\":2,\"mode\":\"%s\",\"look\":\"%s\",\"charset_name\":\"%s\",\"frame\":%llu,\n",
+	fprintf(file, "{\"version\":3,\"mode\":\"%s\",\"look\":\"%s\",\"charset_name\":\"%s\",\"frame\":%llu,\n",
 		mode_info(f->mode).name, obs_data_get_string(source_settings, key::kLook), charset_value(s.charset),
 		static_cast<unsigned long long>(f->frame));
 	obs_data_release(source_settings);
@@ -825,6 +940,12 @@ void dump_grid(GlyphFilter *f, const Grid &grid, const Settings &s, uint32_t sou
 		s.edges_transparent ? "transparent" : "black", b(s.keep_transparency));
 	fprintf(file, "\"cells_x\":%u,\"cells_y\":%u,\"offset_x\":%d,\"offset_y\":%d,\n", cx, cy, grid.offset_x,
 		grid.offset_y);
+	fprintf(file,
+		"\"motion\":{\"soften\":%s,\"hold\":%d,\"settle\":%d,\"boil\":%d,\"boil_spread\":%d,"
+		"\"boil_linger\":%d,\"hold_threshold\":%s,\"seed\":%u},\n",
+		num(s.soften).c_str(), s.hold, s.settle, s.boil, s.boil_spread, s.boil_linger,
+		num(hold_threshold(f->mode, s.hold)).c_str(), f->seed);
+	fprintf(file, "\"light_jump\":%s,\"jump_share\":%s,\n", b(levels[4] > 0.5f), num(levels[5]).c_str());
 	if (f->mode == Mode::Ink) {
 		fprintf(file,
 			"\"ink\":{\"color\":\"%s\",\"a\":%s,\"b\":%s,\"background\":\"%s\",\"lightness\":%s,"
@@ -847,6 +968,7 @@ void dump_grid(GlyphFilter *f, const Grid &grid, const Settings &s, uint32_t sou
 	}
 	list("glyph", [&](size_t i) { return num(scores[i * 4 + 1]); });
 	list("held", [&](size_t i) { return num(scores[i * 4 + 0]); });
+	list("boil", [&](size_t i) { return num(scores[i * 4 + 2]); });
 	list("cost", [&](size_t i) { return num(scores[i * 4 + 3]); });
 	list("mean_lab", [&](size_t i) { return vec3(&stats[i * 4]); });
 	list("mean_alpha", [&](size_t i) { return num(stats[i * 4 + 3]); });
@@ -858,6 +980,96 @@ void dump_grid(GlyphFilter *f, const Grid &grid, const Settings &s, uint32_t sou
 	fprintf(file, "}\n");
 	fclose(file);
 	obs_log(LOG_INFO, "grid dump written to %s (%ux%u cells)", path.c_str(), cx, cy);
+}
+
+// Per-frame recording (debug builds): Record grid starts it; each frame then
+// appends the held and shown glyphs, the boil frames left and optionally the
+// colors of every cell, for tools/reference/run_motion.py. Format (little
+// endian): per frame, a header of 8 uint32 ("GNRF", frame counter, cells_x,
+// cells_y, light jump 0/1, the jump share as float bits, colors 0/1, the mean
+// of the cells' raw mean lightness as float bits), then
+// held uint16[n], shown uint16[n], boil uint8[n], and with colors float32[n][6]
+// (text OKLab, background OKLab). The file is written as <path>.part and
+// renamed to <path> after the last frame.
+void record_frame(GlyphFilter *f, const Grid &grid)
+{
+#ifdef GLYPHNOTIC_DEBUG_TOOLS
+	if (f->record_requested.exchange(false) && !f->record_file) {
+		const char *path = getenv("GLYPHNOTIC_RECORD_PATH");
+		const char *frames = getenv("GLYPHNOTIC_RECORD_FRAMES");
+		const char *colors = getenv("GLYPHNOTIC_RECORD_COLORS");
+		f->record_path = path ? path : "";
+		f->record_left = frames ? atoi(frames) : 0;
+		f->record_colors = colors && *colors == '1';
+		const std::string part = f->record_path + ".part";
+		f->record_file = (f->record_path.empty() || f->record_left <= 0) ? nullptr
+										 : os_fopen(part.c_str(), "wb");
+		if (!f->record_file)
+			obs_log(LOG_WARNING, "record: cannot start (GLYPHNOTIC_RECORD_PATH, GLYPHNOTIC_RECORD_FRAMES)");
+	}
+	if (!f->record_file)
+		return;
+
+	const auto cx = static_cast<uint32_t>(grid.cells_x);
+	const auto cy = static_cast<uint32_t>(grid.cells_y);
+	const size_t n = static_cast<size_t>(cx) * cy;
+	std::vector<float> scores, colors, state, stats;
+	if (!read_texture(gs_texrender_get_texture(f->tr_score[f->cur]), cx, cy, scores) ||
+	    !read_texture(gs_texrender_get_texture(f->tr_levels[f->cur]), 2, 1, state) ||
+	    !read_texture(gs_texrender_get_texture(f->tr_stats[f->cur]), cx, cy, stats) ||
+	    (f->record_colors && !read_texture(gs_texrender_get_texture(f->tr_color[f->cur]), cx * 2, cy, colors))) {
+		obs_log(LOG_WARNING, "record: texture readback failed");
+		return;
+	}
+	double sum_l = 0.0;
+	for (size_t i = 0; i < n; i++)
+		sum_l += stats[i * 4];
+	const float mean_l = static_cast<float>(sum_l / static_cast<double>(n));
+	uint32_t share_bits, mean_bits;
+	memcpy(&share_bits, &state[5], 4);
+	memcpy(&mean_bits, &mean_l, 4);
+	const uint32_t header[8] = {0x46524E47u, // "GNRF"
+				    static_cast<uint32_t>(f->frame),
+				    cx,
+				    cy,
+				    state[4] > 0.5f ? 1u : 0u,
+				    share_bits,
+				    f->record_colors ? 1u : 0u,
+				    mean_bits};
+	std::vector<uint16_t> held(n), shown(n);
+	std::vector<uint8_t> boil(n);
+	for (size_t i = 0; i < n; i++) {
+		held[i] = static_cast<uint16_t>(scores[i * 4 + 0] + 0.5f);
+		shown[i] = static_cast<uint16_t>(scores[i * 4 + 1] + 0.5f);
+		boil[i] = static_cast<uint8_t>(scores[i * 4 + 2] + 0.5f);
+	}
+	fwrite(header, sizeof(header), 1, f->record_file);
+	fwrite(held.data(), sizeof(uint16_t), n, f->record_file);
+	fwrite(shown.data(), sizeof(uint16_t), n, f->record_file);
+	fwrite(boil.data(), 1, n, f->record_file);
+	if (f->record_colors) {
+		std::vector<float> lab(n * 6);
+		for (size_t i = 0; i < n; i++) {
+			const float *t = colors.data() + ((i / cx) * cx * 2 + (i % cx) * 2) * 4;
+			for (int k = 0; k < 3; k++) {
+				lab[i * 6 + static_cast<size_t>(k)] = t[k];
+				lab[i * 6 + 3 + static_cast<size_t>(k)] = t[4 + k];
+			}
+		}
+		fwrite(lab.data(), sizeof(float), lab.size(), f->record_file);
+	}
+	if (--f->record_left <= 0) {
+		fclose(f->record_file);
+		f->record_file = nullptr;
+		const std::string part = f->record_path + ".part";
+		os_unlink(f->record_path.c_str());
+		os_rename(part.c_str(), f->record_path.c_str());
+		obs_log(LOG_INFO, "recording written to %s", f->record_path.c_str());
+	}
+#else
+	UNUSED_PARAMETER(f);
+	UNUSED_PARAMETER(grid);
+#endif
 }
 
 void free_type_data(void *type_data)

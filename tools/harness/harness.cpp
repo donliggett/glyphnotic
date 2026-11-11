@@ -7,7 +7,13 @@
 //   - OBS's main canvas texture (any canvas format; raw, see below);
 //   - lagged-frame counts and OBS's per-source GPU times over a run;
 //   - the filter's settings and properties after changes made the way the
-//     properties window makes them.
+//     properties window makes them;
+//   - a per-frame recording of the grid (held and shown glyphs, boils,
+//     colors), and two consecutive output frames.
+//
+// Besides OBS's image source it has two test sources of its own: an HDR
+// still, and a frame sequence that plays stills in turn and can add fresh
+// Gaussian noise to every frame.
 //
 // It's a test tool and is never shipped. It needs a plugin built with
 // GLYPHNOTIC_DEBUG_TOOLS=ON and an installed OBS of the same version that
@@ -28,6 +34,7 @@
 #include <cstring>
 #include <fstream>
 #include <functional>
+#include <sstream>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -73,7 +80,9 @@ const char *kUsage =
 	"         [--dump <json>] [--frame <pam>] [--main-texture <raw>] [--check-visible <property>]\n"
 	"         [--ui-set <json> [--ui-no-update]] [--press <button>]... [--wait-frames <n>]\n"
 	"         [--settings-out <json>] [--properties-out <json>]\n"
-	"         [--then-image <png> --then-frames <n> --dump2 <json>]\n";
+	"         [--then-image <png> --then-frames <n> --dump2 <json>]\n"
+	"         [--also <png>]... [--period <frames>] [--noise <sigma>] [--noise-seed <n>]\n"
+	"         [--record <bin> --record-frames <n> [--record-colors]] [--frame-pair <prefix>]\n";
 
 struct FilterSpec {
 	std::string id;
@@ -92,6 +101,18 @@ struct Args {
 	int then_frames = 0;
 	bool hdr_source = false;
 	double hdr_scale = 1.0;
+	// The frame sequence source: --image, then each --also, `period` frames
+	// each (0: the first only), with fresh Gaussian noise of `noise` (8-bit
+	// units) on every frame.
+	std::vector<std::string> also;
+	int period = 0;
+	double noise = 0.0;
+	int noise_seed = 1;
+	bool frames_source = false;
+	std::string record; // per-frame recording of the first Glyphnotic filter
+	int record_frames = 0;
+	bool record_colors = false;
+	std::string frame_pair; // two consecutive output frames: <prefix>-0.pam, -1.pam
 	std::vector<FilterSpec> filters;
 	int instances = 1;
 	uint32_t canvas_w = 0, canvas_h = 0; // 0 = the still's size, rounded up to a multiple of 4
@@ -180,6 +201,27 @@ bool parse_args(int argc, char **argv, Args &a)
 			a.then_frames = atoi(v.c_str());
 		else if (k == "--dump2")
 			ok = next(a.dump2);
+		else if (k == "--also" && (ok = next(v))) {
+			a.also.push_back(v);
+			a.frames_source = true;
+		} else if (k == "--period" && (ok = next(v))) {
+			a.period = atoi(v.c_str());
+			a.frames_source = true;
+		} else if (k == "--noise" && (ok = next(v))) {
+			a.noise = atof(v.c_str());
+			a.frames_source = true;
+		} else if (k == "--noise-seed" && (ok = next(v)))
+			a.noise_seed = atoi(v.c_str());
+		else if (k == "--frame-sequence")
+			a.frames_source = true;
+		else if (k == "--record")
+			ok = next(a.record);
+		else if (k == "--record-frames" && (ok = next(v)))
+			a.record_frames = atoi(v.c_str());
+		else if (k == "--record-colors")
+			a.record_colors = true;
+		else if (k == "--frame-pair")
+			ok = next(a.frame_pair);
 		else if (k == "--renderer")
 			ok = next(a.renderer);
 		else if (k == "--format")
@@ -341,6 +383,195 @@ void register_hdr_source()
 }
 
 // ---------------------------------------------------------------------------
+// A test-only frame sequence: 8-bit stills shown in turn, `period` frames
+// each, optionally with fresh Gaussian noise on every frame. Noise is added
+// to each color channel of the straight 8-bit values and rounded, as
+// round(v + n) = v + round(n) with n ~ N(0, sigma^2), drawn from a table of
+// round(n)'s distribution; the result is clipped to 0..255 and premultiplied
+// by alpha as OBS's image loader stores it (round(c * a / 255)). It draws its
+// texture with OBS's default effect, without OBS_SOURCE_SRGB, so the bytes
+// reach a filter unchanged (run_motion.py checks that a filter sees the same
+// grid as with OBS's image source).
+
+struct FramesSource {
+	std::vector<std::vector<uint8_t>> images; // straight RGBA
+	uint32_t w = 0, h = 0;
+	int period = 0;
+	double noise = 0.0;
+	uint64_t seed = 1;
+	std::vector<int8_t> noise_table; // 65536 draws of round(n)
+	std::vector<uint8_t> frame;      // premultiplied RGBA, uploaded
+	gs_texture_t *tex = nullptr;
+	uint64_t ticks = 0;
+	uint64_t uploaded = UINT64_MAX;
+	size_t uploaded_image = SIZE_MAX;
+};
+
+uint64_t splitmix64(uint64_t &state)
+{
+	uint64_t z = (state += 0x9E3779B97F4A7C15ull);
+	z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ull;
+	z = (z ^ (z >> 27)) * 0x94D049BB133111EBull;
+	return z ^ (z >> 31);
+}
+
+// round(n) for n ~ N(0, sigma^2), as a table indexed by 16 random bits.
+std::vector<int8_t> make_noise_table(double sigma)
+{
+	std::vector<int8_t> table(65536, 0);
+	if (sigma <= 0.0)
+		return table;
+	auto cdf = [&](double x) {
+		return 0.5 * std::erfc(-x / (sigma * std::sqrt(2.0)));
+	};
+	int k = -127;
+	for (int u = 0; u < 65536; u++) {
+		const double x = (u + 0.5) / 65536.0;
+		while (k < 127 && cdf(k + 0.5) <= x)
+			k++;
+		table[size_t(u)] = int8_t(k);
+	}
+	return table;
+}
+
+const char *frames_get_name(void *)
+{
+	return "Harness frame sequence";
+}
+
+void *frames_create(obs_data_t *settings, obs_source_t *)
+{
+	auto *s = new FramesSource();
+	std::istringstream files(obs_data_get_string(settings, "files"));
+	std::string file;
+	while (std::getline(files, file)) {
+		enum gs_color_format fmt = GS_UNKNOWN;
+		uint32_t w = 0, h = 0;
+		uint8_t *px = gs_create_texture_file_data(file.c_str(), &fmt, &w, &h);
+		if (!px || (!s->images.empty() && (w != s->w || h != s->h))) {
+			fprintf(stderr, "frame sequence: cannot use %s\n", file.c_str());
+			bfree(px);
+			s->images.clear();
+			break;
+		}
+		s->w = w;
+		s->h = h;
+		const bool bgr = fmt == GS_BGRA || fmt == GS_BGRX;
+		const bool opaque = fmt == GS_BGRX;
+		std::vector<uint8_t> rgba(size_t(w) * h * 4);
+		for (size_t i = 0; i < size_t(w) * h; i++) {
+			for (int c = 0; c < 3; c++)
+				rgba[i * 4 + c] = px[i * 4 + (bgr ? 2 - c : c)];
+			rgba[i * 4 + 3] = opaque ? 255 : px[i * 4 + 3];
+		}
+		bfree(px);
+		s->images.push_back(std::move(rgba));
+	}
+	s->period = int(obs_data_get_int(settings, "period"));
+	s->noise = obs_data_get_double(settings, "noise");
+	s->seed = uint64_t(obs_data_get_int(settings, "seed"));
+	s->noise_table = make_noise_table(s->noise);
+	if (!s->images.empty()) {
+		s->frame.resize(s->images[0].size());
+		obs_enter_graphics();
+		s->tex = gs_texture_create(s->w, s->h, GS_RGBA, 1, nullptr, GS_DYNAMIC);
+		obs_leave_graphics();
+	}
+	return s;
+}
+
+void frames_destroy(void *data)
+{
+	auto *s = static_cast<FramesSource *>(data);
+	obs_enter_graphics();
+	gs_texture_destroy(s->tex);
+	obs_leave_graphics();
+	delete s;
+}
+
+uint32_t frames_width(void *data)
+{
+	return static_cast<FramesSource *>(data)->w;
+}
+
+uint32_t frames_height(void *data)
+{
+	return static_cast<FramesSource *>(data)->h;
+}
+
+void frames_tick(void *data, float)
+{
+	static_cast<FramesSource *>(data)->ticks++;
+}
+
+// Builds and uploads this tick's frame (render thread, graphics context entered).
+void frames_update(FramesSource *s)
+{
+	const size_t index = s->period > 0 ? size_t(s->ticks / uint64_t(s->period)) % s->images.size() : 0;
+	if (s->uploaded == s->ticks || (s->noise <= 0.0 && index == s->uploaded_image))
+		return;
+	const std::vector<uint8_t> &img = s->images[index];
+	uint64_t state = s->seed * 0x100000001B3ull + s->ticks;
+	uint64_t bits = 0;
+	int left = 0;
+	for (size_t i = 0; i < img.size(); i += 4) {
+		const double a = img[i + 3];
+		for (int c = 0; c < 3; c++) {
+			int v = img[i + size_t(c)];
+			if (s->noise > 0.0) {
+				if (left == 0) {
+					bits = splitmix64(state);
+					left = 4;
+				}
+				v += s->noise_table[size_t(bits & 0xFFFF)];
+				bits >>= 16;
+				left--;
+				v = v < 0 ? 0 : v > 255 ? 255 : v;
+			}
+			s->frame[i + size_t(c)] = uint8_t(std::floor(v * (a / 255.0) + 0.5));
+		}
+		s->frame[i + 3] = img[i + 3];
+	}
+	gs_texture_set_image(s->tex, s->frame.data(), s->w * 4, false);
+	s->uploaded = s->ticks;
+	s->uploaded_image = index;
+}
+
+void frames_render(void *data, gs_effect_t *)
+{
+	auto *s = static_cast<FramesSource *>(data);
+	if (!s->tex)
+		return;
+	frames_update(s);
+	const bool prev_srgb = gs_framebuffer_srgb_enabled();
+	gs_enable_framebuffer_srgb(false);
+	gs_blend_state_push();
+	gs_blend_function(GS_BLEND_ONE, GS_BLEND_INVSRCALPHA);
+	gs_effect_t *effect = obs_get_base_effect(OBS_EFFECT_DEFAULT);
+	gs_effect_set_texture(gs_effect_get_param_by_name(effect, "image"), s->tex);
+	while (gs_effect_loop(effect, "Draw"))
+		gs_draw_sprite(s->tex, 0, s->w, s->h);
+	gs_blend_state_pop();
+	gs_enable_framebuffer_srgb(prev_srgb);
+}
+
+void register_frames_source()
+{
+	obs_source_info info = {};
+	info.id = "harness_frames";
+	info.type = OBS_SOURCE_TYPE_INPUT;
+	info.output_flags = OBS_SOURCE_VIDEO | OBS_SOURCE_CUSTOM_DRAW;
+	info.get_name = frames_get_name;
+	info.create = frames_create;
+	info.destroy = frames_destroy;
+	info.get_width = frames_width;
+	info.get_height = frames_height;
+	info.video_tick = frames_tick;
+	info.video_render = frames_render;
+	obs_register_source(&info);
+}
+
+// ---------------------------------------------------------------------------
 
 struct FrameGrab {
 	std::mutex mutex;
@@ -348,6 +579,8 @@ struct FrameGrab {
 	uint32_t width = 0, height = 0;
 	bool bgra = true; // only BGRA frames are kept
 	std::atomic<int> count{0};
+	int pair_left = 0; // frames still to keep for --frame-pair
+	std::vector<std::vector<uint8_t>> pair;
 };
 
 void raw_video(void *param, struct video_data *frame)
@@ -365,6 +598,10 @@ void raw_video(void *param, struct video_data *frame)
 				dst[x * 4 + 2] = src[x * 4 + 0];
 				dst[x * 4 + 3] = src[x * 4 + 3];
 			}
+		}
+		if (g->pair_left > 0) {
+			g->pair.push_back(g->rgba);
+			g->pair_left--;
 		}
 	}
 	g->count++;
@@ -559,16 +796,63 @@ bool write_file(const std::string &path, const std::string &text)
 	return true;
 }
 
+bool write_pam(const std::string &path, const std::vector<uint8_t> &rgba, uint32_t w, uint32_t h)
+{
+	FILE *f = os_fopen(path.c_str(), "wb");
+	if (!f)
+		return false;
+	fprintf(f, "P7\nWIDTH %u\nHEIGHT %u\nDEPTH 4\nMAXVAL 255\nTUPLTYPE RGB_ALPHA\nENDHDR\n", w, h);
+	fwrite(rgba.data(), 1, rgba.size(), f);
+	fclose(f);
+	return true;
+}
+
+void set_env(const char *name, const std::string &value)
+{
+#ifdef _WIN32
+	_putenv_s(name, value.c_str());
+#else
+	setenv(name, value.c_str(), 1);
+#endif
+}
+
+// Presses a button of a filter.
+bool press_button(obs_source_t *filter, const char *name)
+{
+	obs_properties_t *props = filter ? obs_source_properties(filter) : nullptr;
+	obs_property_t *button = props ? obs_properties_get(props, name) : nullptr;
+	if (button)
+		obs_property_button_clicked(button, filter);
+	else
+		fprintf(stderr, "no %s button: needs a Glyphnotic filter from a build with GLYPHNOTIC_DEBUG_TOOLS=ON\n",
+			name);
+	obs_properties_destroy(props);
+	return button != nullptr;
+}
+
+// Presses Record grid on a filter and waits for the recording.
+bool press_record(obs_source_t *filter, const Args &a)
+{
+	os_unlink(a.record.c_str());
+	set_env("GLYPHNOTIC_RECORD_PATH", a.record);
+	set_env("GLYPHNOTIC_RECORD_FRAMES", std::to_string(a.record_frames));
+	set_env("GLYPHNOTIC_RECORD_COLORS", a.record_colors ? "1" : "0");
+	if (!press_button(filter, "record_grid"))
+		return false;
+	const int timeout = int(1000.0 * a.record_frames / a.fps * 4) + 30000;
+	if (!wait_for([&] { return os_file_exists(a.record.c_str()); }, timeout)) {
+		fprintf(stderr, "no recording written\n");
+		return false;
+	}
+	return true;
+}
+
 // Presses Dump grid on a filter and waits for the file.
 bool press_dump(obs_source_t *filter, const std::string &path)
 {
 	os_unlink(path.c_str());
 	// The plugin writes its dump to GLYPHNOTIC_DUMP_PATH.
-#ifdef _WIN32
-	_putenv_s("GLYPHNOTIC_DUMP_PATH", path.c_str());
-#else
-	setenv("GLYPHNOTIC_DUMP_PATH", path.c_str(), 1);
-#endif
+	set_env("GLYPHNOTIC_DUMP_PATH", path);
 	obs_properties_t *props = filter ? obs_source_properties(filter) : nullptr;
 	obs_property_t *button = props ? obs_properties_get(props, "dump_grid") : nullptr;
 	if (!button) {
@@ -660,6 +944,7 @@ int run(const Args &a)
 		return 2;
 	}
 	register_hdr_source();
+	register_frames_source();
 
 	int status = 0;
 	std::vector<obs_source_t *> inputs;   // the stills
@@ -676,9 +961,18 @@ int run(const Args &a)
 		obs_data_t *s = obs_data_create();
 		obs_data_set_string(s, "file", a.image.c_str());
 		obs_data_set_double(s, "scale", a.hdr_scale);
+		std::string files = a.image;
+		for (const std::string &f : a.also)
+			files += "\n" + f;
+		obs_data_set_string(s, "files", files.c_str());
+		obs_data_set_int(s, "period", a.period);
+		obs_data_set_double(s, "noise", a.noise);
+		obs_data_set_int(s, "seed", a.noise_seed + i);
 		const std::string name = "still " + std::to_string(i);
-		obs_source_t *input = obs_source_create(a.hdr_source ? "harness_hdr_still" : "image_source",
-							name.c_str(), s, nullptr);
+		const char *kind = a.hdr_source      ? "harness_hdr_still"
+				   : a.frames_source ? "harness_frames"
+						     : "image_source";
+		obs_source_t *input = obs_source_create(kind, name.c_str(), s, nullptr);
 		obs_data_release(s);
 		if (!input || obs_source_get_width(input) != w || obs_source_get_height(input) != h) {
 			fprintf(stderr, "the still didn't load: %s\n", a.image.c_str());
@@ -790,6 +1084,30 @@ int run(const Args &a)
 
 		if (status == 0 && !a.dump.empty() && !press_dump(dump_filter, a.dump))
 			status = 2;
+		if (status == 0 && !a.record.empty() && !press_record(dump_filter, a))
+			status = 2;
+		if (status == 0 && !a.frame_pair.empty()) {
+			{
+				std::lock_guard<std::mutex> lock(grab.mutex);
+				grab.pair.clear();
+				grab.pair_left = 2;
+			}
+			if (!wait_for(
+				    [&] {
+					    std::lock_guard<std::mutex> lock(grab.mutex);
+					    return grab.pair.size() >= 2;
+				    },
+				    30000)) {
+				fprintf(stderr, "no frame pair\n");
+				status = 2;
+			} else {
+				std::lock_guard<std::mutex> lock(grab.mutex);
+				for (int k = 0; k < 2 && status == 0; k++)
+					if (!write_pam(a.frame_pair + "-" + std::to_string(k) + ".pam",
+						       grab.pair[size_t(k)], grab.width, grab.height))
+						status = 2;
+			}
+		}
 
 		// Report which of a filter's properties are visible after OBS applies
 		// the settings (running the modified callbacks, as the properties window does).
@@ -916,12 +1234,19 @@ int main(int argc, char **argv)
 	const bool parsed = parse_args(argc, argv, a);
 	// Make paths absolute before the working directory changes.
 	for (std::string *p : {&a.obs_dir, &a.plugin, &a.plugin_data, &a.image, &a.dump, &a.frame, &a.main_texture,
-			       &a.settings_out, &a.properties_out, &a.then_image, &a.dump2}) {
+			       &a.settings_out, &a.properties_out, &a.then_image, &a.dump2, &a.record, &a.frame_pair}) {
 		if (p->empty())
 			continue;
 		char *abs = os_get_abs_path_ptr(p->c_str());
 		if (abs) {
 			*p = abs;
+			bfree(abs);
+		}
+	}
+	for (std::string &p : a.also) {
+		char *abs = os_get_abs_path_ptr(p.c_str());
+		if (abs) {
+			p = abs;
 			bfree(abs);
 		}
 	}

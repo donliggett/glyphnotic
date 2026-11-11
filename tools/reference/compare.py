@@ -14,10 +14,17 @@ Checks (docs/SPEC.md, Phases 1 and 2):
     for the same glyph, in sRGB 0-255 units;
   - known colors (Mosaic and Poster): every cell whose source pixels are all
     one color (a flat cell) must come out as that color within 1/255;
-  - opacity per cell;
+  - opacity per cell (either way for a cell whose mean alpha is within 1e-6
+    of the 0.5 threshold);
   - with --frame, the output frame OBS produced matches the picture the dump
     describes (glyph bitmaps, colors, edges; Poster's snapped colors)
     within 1/255 per channel.
+
+Soften comes from the dump (the reference blurs as the plugin does). With
+Boil on, the shown glyph of a boiling cell differs from the image-driven
+pick, so the held glyphs are compared instead, the colors are those of the
+shown glyphs, and the frame (taken a few frames after the dump, when other
+cells boil) isn't checked.
 
 Exit status 0 when every check passes.
 """
@@ -76,15 +83,24 @@ def expected_frame(dump, glyph_bits, width, height, alt=False):
     return out
 
 
-def flat_cells(img, grid):
-    """For each cell, (is_flat, rgb) over its source pixels."""
+def flat_cells(img, grid, margin=0):
+    """For each cell, (is_flat, rgb) over its source pixels and `margin` pixels
+    around them (Soften's radius: what the blur reads), within the image."""
     s, cx, cy = grid["scale"], grid["cells_x"], grid["cells_y"]
     ox, oy = grid["offset_x"], grid["offset_y"]
-    crop = img[oy:oy + cy * 16 * s, ox:ox + cx * 8 * s].astype(np.int32)
-    cells = crop.reshape(cy, 16 * s, cx, 8 * s, 4).transpose(0, 2, 1, 3, 4).reshape(cy, cx, -1, 4)
-    first = cells[:, :, :1, :]
-    flat = (cells == first).all(axis=(-1, -2)) & (first[:, :, 0, 3] == 255)
-    return flat, first[:, :, 0, :3].astype(np.float64)
+    im = img.astype(np.int32)
+    if margin:
+        im = np.pad(im, ((margin, margin), (margin, margin), (0, 0)), mode="edge")
+    flat = np.zeros((cy, cx), dtype=bool)
+    rgb = np.zeros((cy, cx, 3))
+    for j in range(cy):
+        for i in range(cx):
+            y0, x0 = oy + j * 16 * s, ox + i * 8 * s
+            block = im[y0:y0 + 16 * s + 2 * margin, x0:x0 + 8 * s + 2 * margin].reshape(-1, 4)
+            first = block[0]
+            flat[j, i] = (block == first).all() and first[3] == 255
+            rgb[j, i] = first[:3]
+    return flat, rgb
 
 
 def compare(still_path, dump_path, frame_path=None, custom=""):
@@ -93,9 +109,13 @@ def compare(still_path, dump_path, frame_path=None, custom=""):
     font = ref.Font()
     charset = dump["charset_name"]
     mode = dump.get("mode", "mosaic")
+    motion = dump.get("motion", {})
+    soften = motion.get("soften", 0.0)
+    boiling = motion.get("boil", 0) > 0
     r = ref.run(img, mode=mode, charset=charset, custom=custom, scale=dump["cell_scale"],
                 alignment=dump["alignment"], font=font, keep_transparency=dump["keep_transparency"],
-                ink=dump.get("ink"), palette=[tuple(c) for c in dump["palette"]] if "palette" in dump else None)
+                ink=dump.get("ink"), palette=[tuple(c) for c in dump["palette"]] if "palette" in dump else None,
+                soften=soften)
     grid = r["grid"]
     res = {"still": still_path, "dump": dump_path, "mode": mode, "checks": {}}
     checks = res["checks"]
@@ -115,7 +135,8 @@ def compare(still_path, dump_path, frame_path=None, custom=""):
         checks["levels"] = res["levels_error"] < LEVELS_LIMIT
 
     cy, cx = grid["cells_y"], grid["cells_x"]
-    plugin = np.array(dump["glyph"]).reshape(cy, cx).astype(int)
+    shown = np.array(dump["glyph"]).reshape(cy, cx).astype(int)
+    plugin = np.array(dump["held"]).reshape(cy, cx).astype(int) if boiling else shown
     best = r["best"]
     costs = r["costs"]
     match = plugin == best
@@ -129,7 +150,7 @@ def compare(still_path, dump_path, frame_path=None, custom=""):
     checks["gap"] = res["max_gap"] < GAP_LIMIT
 
     # Colors for the plugin's own glyph, so color errors aren't mixed up with glyph mismatches.
-    text, back = ref.colors_for(r, plugin)
+    text, back = ref.colors_for(r, shown)
     d_text = np.array(dump["text_srgb"]).reshape(cy, cx, 3)
     d_back = np.array(dump["bg_srgb"]).reshape(cy, cx, 3)
     color_err = max(np.abs(d_text - ref.oklab_to_srgb255(text)).max(),
@@ -137,21 +158,26 @@ def compare(still_path, dump_path, frame_path=None, custom=""):
     res["max_color_error"] = float(color_err)
     checks["colors"] = color_err <= COLOR_LIMIT
 
-    flat, flat_rgb = flat_cells(img, grid)
+    flat, flat_rgb = flat_cells(img, grid, ref.soften_radius(soften))
     res["flat_cells"] = int(flat.sum())
     if flat.any() and mode in ("mosaic", "poster"):
         known_err = max(np.abs(d_text - flat_rgb)[flat].max(), np.abs(d_back - flat_rgb)[flat].max())
         res["max_known_color_error"] = float(known_err)
         checks["known_colors"] = known_err <= COLOR_LIMIT
-        checks["flat_glyph_is_space"] = bool((plugin[flat] == 0).all())
+        checks["flat_glyph_is_space"] = bool((shown[flat] == 0).all())
 
     keep = dump["keep_transparency"]
     ref_opaque = ~(keep & (r["mean_alpha"] < 0.5))
     d_opaque = np.array(dump["opaque"]).reshape(cy, cx) > 0.5
-    res["opacity_mismatches"] = int((ref_opaque != d_opaque).sum())
+    # A mean alpha this close to 0.5 is the threshold itself in exact
+    # arithmetic (e.g. a straight edge through the cell's middle under a
+    # symmetric blur); float rounding may put it on either side.
+    at_threshold = keep & (np.abs(r["mean_alpha"] - 0.5) < 1e-6)
+    res["opacity_at_threshold"] = int(at_threshold.sum())
+    res["opacity_mismatches"] = int(((ref_opaque != d_opaque) & ~at_threshold).sum())
     checks["opacity"] = res["opacity_mismatches"] == 0
 
-    if frame_path:
+    if frame_path and not boiling:
         frame = imageio_min.read_pam(frame_path)
         bits = _charset_bits(font, dump)
         exp = expected_frame(dump, bits, img.shape[1], img.shape[0])

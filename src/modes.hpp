@@ -44,6 +44,7 @@ constexpr const char *kPropCustomFallback = "custom_fallback_note";
 constexpr const char *kPropCapturePalette = "capture_palette";
 constexpr const char *kPropPaletteNote = "palette_note";
 constexpr const char *kPropDumpGrid = "dump_grid";
+constexpr const char *kPropRecordGrid = "record_grid";
 
 // Adds the Look, Characters, Grid and mode groups. capture_clicked is the
 // Capture palette button's callback (Console only), called with `data`.

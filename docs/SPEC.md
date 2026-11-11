@@ -47,14 +47,15 @@ src/
   glyph-filter.cpp     shared filter: create/destroy/update/render, palette capture, grid dump
   modes.cpp            per-mode settings, properties, defaults, applying looks
   settings.hpp         modes, setting keys, the settings the render thread uses (no libobs dependency)
+  motion.hpp           the motion settings' constants and formulas: K_mode, Boil's chance, Soften's kernel (no libobs dependency)
   font.cpp             PSF1 parser, character sets, glyph atlas (no libobs dependency)
   grid.hpp             grid geometry (no libobs dependency)
   palette.cpp          color conversions, the VGA palette, palette capture's k-means (no libobs dependency)
   presets.cpp          the looks table (no libobs dependency)
   plugin-support.*     from the plugin template (logging helper)
 data/
-  effects/*.effect     all GPU passes: sample, stats, levels (Reduce and Levels), lightness, score, cell-color,
-                       draw, capture; common and cells are shared includes
+  effects/*.effect     all GPU passes: soften, sample, stats, levels (Reduce and Levels), lightness, score,
+                       cell-color, draw, capture; common and cells are shared includes
   fonts/Uni2-Fixed16.psf, fonts/README.md
   locale/en-US.ini
   manifest.json        generated at build time from buildspec.json: OBS 33 Plugin Manager metadata (display name, ID, version, links)
@@ -156,34 +157,38 @@ These settings shape how the grid changes from frame to frame. They apply to all
 | Setting | Range (UI) | What it does |
 | --- | --- | --- |
 | **Soften** | 0–2 px | Gaussian blur (σ in source pixels) on the source before sampling. Removes sensor noise at its source without holding back real motion. |
-| **Hold** | 0–100 | A cell keeps its previous glyph unless the best glyph's cost is lower by more than the threshold. 0 = no hold; 100 = almost locked. Internally `threshold = Hold / 100 × K_mode`; `K_mode` is set per mode during tuning (Phase 4) so that 100 means "almost locked" in every mode. |
-| **Settle** | 0–95% | Each cell's text and background colors blend with the previous frame's: `c = mix(c_new, c_prev, Settle)`, in OKLab. Calms color flicker separately from glyph changes. |
-| **Boil** | 0–100 | Deliberate, image-independent glyph swaps. The chance that a cell starts a swap in a given second: 0 → never, 100 → 4 swaps per cell per second on average. It's converted to a per-frame chance using OBS's actual frame rate, so the look is the same at 30 and 60 fps. |
-| **Boil spread** | 0–100 | How far a swap may stray from the best glyph: a swapping cell picks uniformly among glyphs whose cost is within `spread × (worst − best)` of the best (UI 100 maps to 0.5). Low spread keeps the image readable; high spread turns into static. |
-| **Boil linger** | 1–12 frames | How long a swapped glyph stays before the cell returns to its held glyph. 1 is a flicker, longer is a crawl. |
+| **Hold** | 0–100 | A cell keeps its previous glyph unless the best glyph's cost is lower by more than the threshold. 0 = no hold; 100 = almost locked. Internally `threshold = Hold / 100 × K_mode`; `K_mode` is set per mode so that 100 means "almost locked" in every mode (provisional values below; Phase 4 tunes them). |
+| **Settle** | 0–95% | Each cell's text and background colors blend with the previous frame's: `c = c_new + (c_prev − c_new) × Settle`, in OKLab. Calms color flicker separately from glyph changes. |
+| **Boil** | 0–100 | Deliberate, image-independent glyph swaps. The rate at which a cell that isn't already swapping starts a swap: 0 → never, 100 → 4 swaps per cell per second. It's converted to a per-frame chance `p = 1 − e^(−r·dt)` (`r` the rate, `dt` the frame interval of OBS's configured frame rate), so the look is the same at 30 and 60 fps. |
+| **Boil spread** | 0–100 | How far a swap may stray from the best glyph: a swapping cell picks uniformly among the glyphs other than its held glyph whose cost is within `spread × (worst − best)` of the best (UI 100 maps to 0.5); if there are none, it shows its held glyph for the swap. Low spread keeps the image readable; high spread turns into static. |
+| **Boil linger** | 1–12 frames | How many frames a swapped glyph is shown before the cell returns to its held glyph (or starts its next swap). 1 is a flicker, longer is a crawl. |
+
+**Soften** blurs the filter's input as OBS hands it over (8-bit, sRGB-encoded, premultiplied by alpha), so transparent pixels don't bleed color; Sample then divides alpha out as for unblurred input. The kernel has taps `−r..r`, `r = ceil(3σ)`, weights `e^(−i²/2σ²)` normalized to sum 1, and a tap beyond the source's edge takes the edge pixel. It's separable: a row pass at source size, then a column pass inside Sample.
 
 **Hold and Boil don't interact.** Each cell stores its *held* glyph, the image-driven choice that Hold compares against, separately from its *shown* glyph. A boiled glyph is shown for its linger and then dropped; it never becomes the held glyph, so boiling can't pile up under a high Hold.
 
-**Light jump.** If at least 50% of cells change raw mean lightness by more than 0.12 from the previous frame, the frame counts as a light jump: every cell picks fresh (Hold is ignored for one frame), Settle restarts, Auto levels snap, and active boils end. This covers scene switches and lights turning on.
+**Hold** keeps the held glyph when `cost(held) − cost(best) ≤ threshold`, else takes the best (the lowest index among ties). At Hold 0 the held glyph is always the best. Provisional `K_mode` (Phase 3: 10× the threshold at which fresh noise of σ = 2/255 on `victor.png`, with the mode's first look, changes fewer than 0.1% of cells per frame, so Hold 10 holds against sensor noise): Ink 0.003, Mosaic 0.000025, Poster 0.00015, Console 0.0015. The modes' costs differ by orders of magnitude, and Poster's Lines set flickers more under noise than Mosaic's Blocks.
 
-Randomness for Boil is a hash (e.g. PCG) of the cell position, a per-instance seed and a frame counter, so it costs no texture memory and no two instances boil in step.
+**Light jump.** If at least 50% of all cells change raw mean lightness by more than 0.12 from the previous frame, the frame counts as a light jump: every cell picks fresh (Hold is ignored for one frame), Settle restarts, Auto levels snap, and active boils end, with no new swap starting that frame. This covers scene switches and lights turning on. The first frame of a grid (a new filter, or after a reset; see Render passes) is fresh in the same way, without counting as a light jump.
+
+Randomness for Boil is a PCG hash of the cell position, a per-instance seed (from the time and the instance's address at creation, not saved) and the instance's frame counter, so it costs no texture memory and no two instances boil in step.
 
 ## Render passes
 
 This sequence is a suggestion; the builder may merge or split passes as long as the results and Acceptance hold. "Cell-res" means a texture with one texel per cell.
 
-1. **Soften** (skipped at 0): separable Gaussian, two passes at source resolution.
+1. **Soften** (skipped at 0): separable Gaussian. The row pass draws OBS's input into a float target at source resolution; the column pass happens as Sample reads that target, so only one source-size target is needed.
 2. **Sample:** source → OKLab plus alpha at sample resolution, `cellsX × 8` by `cellsY × 16`; this is where Cell scale's block averaging happens.
-3. **Cell stats** (cell-res): mean OKLab and mean alpha per cell, plus a flag for Light jump comparing against the previous frame's stats (ping-pong).
-4. **Reduce:** successive downsampling to 1×1 for the Light jump share, and for Ink's Auto levels: each pass sums 16×16 blocks, the first of `(1, L, L²)` over the cells drawn opaque. A 1×1 **Levels** pass turns the sums into `μ`, `σ` and the target, eased against the previous frame's levels (ping-pong 1×1), or Manual's `lo`/`hi`. Ink then runs a **Lightness** pass at sample resolution: each sample's `L'` and alpha, which its Score pass reads in place of the samples.
-5. **Score** (cell-res): each cell loops over the glyphs and its 128 samples, reading the previous held glyph and boil state. Output: held glyph, shown glyph, boil frames left, best cost. Indices are stored as floats, which hold exact integers.
-6. **Color** (one pass into a double-width target, `2 × cellsX` by `cellsY`: even texels hold text colors, odd texels background colors): text and background color for the shown glyph in OKLab, blended with the previous colors by Settle (ping-pong); alpha marks the cell opaque or transparent.
+3. **Cell stats** (cell-res, ping-pong): mean OKLab and mean alpha per cell.
+4. **Reduce** (every mode): successive downsampling to 1×1, each pass summing 16×16 blocks; the first sums `(1, L, L²)` over the cells drawn opaque, for Ink's Auto levels, and the cells whose raw mean lightness changed by more than 0.12 from the previous frame's Cell stats, for the Light jump. A 2×1 **Levels** pass (ping-pong) turns the sums into the frame's state: the light jump and its share, and Ink's `μ`, `σ` and target, eased against the previous frame's levels, or Manual's `lo`/`hi`. Ink then runs a **Lightness** pass at sample resolution: each sample's `L'` and alpha, which its Score pass reads in place of the samples.
+5. **Score** (cell-res, ping-pong): each cell loops over the glyphs and its 128 samples, reading the previous held glyph and boil state, and applies Hold and Boil; a cell that starts a swap loops over the glyphs again to pick it. Output: held glyph, shown glyph, boil frames left (this one included), best cost. Indices are stored as floats, which hold exact integers.
+6. **Color** (one pass into a double-width target, `2 × cellsX` by `cellsY`, ping-pong: even texels hold text colors, odd texels background colors): text and background color for the shown glyph in OKLab, blended with the previous colors by Settle; alpha marks the cell opaque or transparent.
 7. **Draw** (source resolution): each pixel finds its cell, reads the shown glyph's bit from the atlas, and outputs the text or background color, or transparency. Poster snaps its colors here, after Settle, so the drawn colors are always on its levels.
 8. **Capture** (Console, only when Capture palette is pressed): the Sample output averaged down to about 160×90 (alpha-weighted mean OKLab per block, and the block's mean alpha) and read back.
 
 Intermediate targets are 32-bit float RGBA. Every pass reads its inputs with `Load` at integer texel positions derived from the sprite's UVs, so Direct3D and OpenGL index textures the same way.
 
-Ping-pong textures and the frame counter belong to the instance. They are reset when settings change in a way that alters the grid: charset, cell scale, alignment, Keep transparency, mode-specific color settings, or source size.
+Ping-pong textures and the frame counter belong to the instance. They are reset when settings change in a way that alters the grid: charset, cell scale, alignment, Keep transparency, mode-specific color settings, or source size. Motion settings don't reset them. A frame whose passes fail part way also starts the history over.
 
 ## Filters and settings
 
@@ -270,9 +275,9 @@ CI produces `glyphnotic-<version>-macos.pkg`. It isn't tested; reports are welco
 
 ## Reference implementation
 
-`tools/reference/` is a plain Python + NumPy implementation of Sample, Cell stats and Score for single stills, written from this spec, with motion settings off. It works in float64 and models OBS's 8-bit premultiplied input (see Color). It outputs the glyph index per cell. `compare.py` diffs it against a grid dump from the plugin, checks the cell colors and opacity, and checks the output frame OBS produced against the picture the dump describes.
+`tools/reference/` is a plain Python + NumPy implementation of Soften, Sample, Cell stats and Score for single stills, written from this spec, giving a fresh pick (Hold, Settle and Boil act over time, and are checked over time by `run_motion.py` against the reference's costs). It works in float64 and models OBS's 8-bit premultiplied input (see Color). It outputs the glyph index per cell. `compare.py` diffs it against a grid dump from the plugin, checks the cell colors and opacity, and checks the output frame OBS produced against the picture the dump describes.
 
-A debug build of the plugin (CMake option `GLYPHNOTIC_DEBUG_TOOLS`) adds a **Dump grid** button that writes the shown glyph indices and the cell colors for the current frame to a file. The same build makes `tools/harness`, which runs a filter on a still in a headless libobs (OBS's own image source, real renderer) and saves the dump and one output frame; `run_stills.py` runs it and `compare.py` over every test still; `run_color_paths.py` checks colors along OBS's other color paths (filters before and after, 10-bit and HDR canvases, 16-bit and HDR sources). `tools/README.md` has the commands. None of this is shipped.
+A debug build of the plugin (CMake option `GLYPHNOTIC_DEBUG_TOOLS`) adds a **Dump grid** button that writes the shown glyph indices and the cell colors for the current frame to a file, and a **Record grid** button that writes every following frame's held and shown glyphs, boil state and colors. The same build makes `tools/harness`, which runs a filter on a still in a headless libobs (OBS's own image source, or its own frame sequence of stills with fresh noise; real renderer) and saves the dump, a recording and output frames; `run_stills.py` runs it and `compare.py` over every test still; `run_color_paths.py` checks colors along OBS's other color paths (filters before and after, 10-bit and HDR canvases, 16-bit and HDR sources); `run_motion.py` checks the motion settings over time. `tools/README.md` has the commands. None of this is shipped.
 
 ## Build phases and acceptance
 
@@ -295,10 +300,10 @@ A builder starting a phase first reads `docs/BUILDER-NOTES.md`, the previous pha
 - [x] All looks from Looks are present and apply (measured: all 10 looks, applied from settings and from the properties window, each picture matching the reference)
 
 **Phase 3: motion**
-- [ ] Soften, Hold, Settle, Boil, Boil spread, Boil linger, Light jump
-- [ ] Flicker test: a still plus fresh Gaussian noise (σ = 2/255) every frame, 600 frames. Report the share of cells that change glyph per frame for each look, with motion off and at the look's settings. At the look's settings, non-boiling looks change ≤ 3% of cells per frame
-- [ ] Light jump: alternating between two different stills, the first frame after each switch matches a fresh pick in 100% of cells
-- [ ] Boil 0: two consecutive frames of a still are identical. Boil > 0: the measured swap rate is within ±20% of the setting. A swapped cell returns to its held glyph after its linger, even at Hold 100
+- [x] Soften, Hold, Settle, Boil, Boil spread, Boil linger, Light jump (measured: Soften matches the reference in ≥ 99.99% of cells in 14 still cases, every mismatch a cost gap under 1e-10; Hold keeps exactly the glyphs the reference's costs predict in 7 cases; Settle follows its formula within 3e-8)
+- [x] Flicker test: a still plus fresh Gaussian noise (σ = 2/255) every frame, 600 frames. Report the share of cells that change glyph per frame for each look, with motion off and at the look's settings. At the look's settings, non-boiling looks change ≤ 3% of cells per frame (measured on victor: 2.3–47% with motion off, 0.00–0.11% for the eight non-boiling looks at their settings; Static 3.8%, Fever 11.4%)
+- [x] Light jump: alternating between two different stills, the first frame after each switch matches a fresh pick in 100% of cells (measured: victor and a crop of sintel, all 10 looks, 6 switches each: 100%, with the fresh colors)
+- [x] Boil 0: two consecutive frames of a still are identical. Boil > 0: the measured swap rate is within ±20% of the setting. A swapped cell returns to its held glyph after its linger, even at Hold 100 (measured: every look's frames identical at Boil 0; 10 cases at 30 and 60 fps within 1.4% of the set rate; every swap lasts exactly its linger, held glyphs unchanged at Hold 10–100; the same on Direct3D 11 and OpenGL. The Linux check is still to run: Launchpad was unreachable)
 
 **Phase 4: tuning**
 - [ ] `K_mode` set for each mode, and every slider range trimmed to the span that looks deliberate

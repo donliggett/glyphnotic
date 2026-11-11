@@ -7,8 +7,9 @@
 #   2. builds the plugin as CI does (warnings as errors) and runs the unit tests;
 #   3. installs it to the system plugin location (/usr, the .deb's layout);
 #   4. runs OBS under xvfb-run, as an ordinary user, on a test collection with
-#      one image source per Glyphnotic filter, then stops OBS with SIGINT so
-#      it shuts down cleanly and logs its leak count;
+#      one image source per Glyphnotic filter, plus Ink's two boiling looks
+#      (Static and Fever, which run Boil's hashing and Settle), then stops OBS
+#      with SIGINT so it shuts down cleanly and logs its leak count;
 #   5. checks the log: the plugin loaded, all four filters were created, no
 #      Glyphnotic errors, no failed draws, "Number of memory leaks: 0".
 #
@@ -60,7 +61,8 @@ printf '[General]\nFirstRun=true\n' >"$cfg/user.ini"
 printf '[General]\nName=Glyphnotic Test\n\n[Video]\nBaseCX=1920\nBaseCY=1080\nOutputCX=1920\nOutputCY=1080\nFPSType=0\nFPSCommon=30\n' \
 	>"$cfg/basic/profiles/Glyphnotic_Test/basic.ini"
 
-# One image source per filter, in a 2x2 layout at half size.
+# One image source per filter and two more for Ink's boiling looks, in a 3x2
+# layout at half size.
 source_json() { # name uuid file filter_id filter_name filter_uuid look
 	cat <<EOF
 {"name": "$1", "uuid": "$2", "id": "image_source", "versioned_id": "image_source",
@@ -84,15 +86,23 @@ EOF
 	source_json "Poster" 10000000-0000-4000-8000-000000000003 bbb-alpha.png glyphnotic_poster "Glyphnotic Poster" 20000000-0000-4000-8000-000000000003 poster
 	echo ','
 	source_json "Console" 10000000-0000-4000-8000-000000000004 victor.png glyphnotic_console "Glyphnotic Console" 20000000-0000-4000-8000-000000000004 console
+	echo ','
+	source_json "Ink Static" 10000000-0000-4000-8000-000000000005 bbb-alpha.png glyphnotic_ink "Glyphnotic Ink Static" 20000000-0000-4000-8000-000000000005 static
+	echo ','
+	source_json "Ink Fever" 10000000-0000-4000-8000-000000000006 victor.png glyphnotic_ink "Glyphnotic Ink Fever" 20000000-0000-4000-8000-000000000006 fever
 	echo ', {"name": "Scene", "uuid": "30000000-0000-4000-8000-000000000001", "id": "scene", "versioned_id": "scene",'
-	echo '   "settings": {"id_counter": 4, "custom_size": false, "items": ['
+	echo '   "settings": {"id_counter": 6, "custom_size": false, "items": ['
 	item_json "Ink" 10000000-0000-4000-8000-000000000001 1 0.0 0.0
 	echo ','
-	item_json "Mosaic" 10000000-0000-4000-8000-000000000002 2 960.0 0.0
+	item_json "Mosaic" 10000000-0000-4000-8000-000000000002 2 640.0 0.0
 	echo ','
-	item_json "Poster" 10000000-0000-4000-8000-000000000003 3 960.0 540.0
+	item_json "Poster" 10000000-0000-4000-8000-000000000003 3 640.0 540.0
 	echo ','
 	item_json "Console" 10000000-0000-4000-8000-000000000004 4 0.0 540.0
+	echo ','
+	item_json "Ink Static" 10000000-0000-4000-8000-000000000005 5 1280.0 0.0
+	echo ','
+	item_json "Ink Fever" 10000000-0000-4000-8000-000000000006 6 1280.0 540.0
 	echo ']}}]}'
 } >"$cfg/basic/scenes/Glyphnotic_Test.json"
 chown -R tester:tester /home/tester

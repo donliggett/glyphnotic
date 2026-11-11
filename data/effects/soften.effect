@@ -1,0 +1,46 @@
+// Glyphnotic pass: Soften, horizontal half (source resolution).
+//
+// Soften is a Gaussian blur with sigma in source pixels, on the filter's
+// input before sampling. It's separable: this pass blurs each row of OBS's
+// input into a float target, and the Sample pass's DrawSoft technique blurs
+// columns as it reads that target (sample.effect), so only one source-size
+// float target is needed.
+//
+// The input is OBS's 8-bit, sRGB-encoded, premultiplied RGBA. The blur works
+// on those premultiplied values, so transparent pixels don't bleed color;
+// Sample divides alpha out afterwards as it does for unblurred input.
+//
+// Kernel: taps -radius..radius, radius = ceil(3 sigma), weights
+// exp(-i^2 / (2 sigma^2)) normalized to sum 1. Taps outside the source take
+// the nearest edge pixel.
+
+#include "common.effect"
+
+uniform texture2d image;
+uniform float2 source_size;
+uniform float sigma;
+uniform int radius;
+
+float4 PSBlurH(VertData v_in) : TARGET
+{
+	int2 p = texel_of(v_in.uv, source_size);
+	int last = int(source_size.x) - 1;
+	float4 sum = float4(0.0, 0.0, 0.0, 0.0);
+	float wsum = 0.0;
+	for (int i = -radius; i <= radius; i++) {
+		float w = exp(-0.5 * float(i * i) / (sigma * sigma));
+		int x = clamp(p.x + i, 0, last);
+		sum += image.Load(int3(x, p.y, 0)) * w;
+		wsum += w;
+	}
+	return sum / wsum;
+}
+
+technique BlurH
+{
+	pass
+	{
+		vertex_shader = VSDefault(v_in);
+		pixel_shader = PSBlurH(v_in);
+	}
+}

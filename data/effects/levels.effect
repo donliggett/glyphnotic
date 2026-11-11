@@ -1,17 +1,23 @@
-// Glyphnotic passes: Reduce and Levels (Ink only).
+// Glyphnotic passes: Reduce and Levels (every mode).
 //
 // Reduce sums blocks of `src` into a smaller target, again and again until
 // one texel is left:
 //   ReduceStats reads the Cell stats output and sums, per cell drawn opaque,
-//     (1, L, L^2), with L the cell's raw mean lightness;
-//   ReduceSum sums the rgb of a previous Reduce output.
-// Levels (1x1) turns those sums into this frame's lo and hi:
-//   Auto: mean mu and deviation sigma of the cells' L, target lo = mu - 2 sigma,
+//     (1, L, L^2), with L the cell's raw mean lightness, and in a, over all
+//     cells, 1 for each cell whose L changed by more than 0.12 from the
+//     previous frame's Cell stats (`prev_stats`; 0 when there's no previous
+//     frame);
+//   ReduceSum sums the rgba of a previous Reduce output.
+// Levels (2x1) turns those sums into this frame's state:
+//   texel (1, 0): (light jump, share of cells changed, 0, 0). A light jump is
+//     a share of at least 0.5 (docs/SPEC.md, Motion).
+//   texel (0, 0): Ink's (lo, hi, mu, sigma).
+//     Auto: mean mu and deviation sigma of the cells' L, target lo = mu - 2 sigma,
 //     hi = mu + 2 sigma, clamped to [0, 1] and widened to hi - lo >= 0.05;
 //     then eased from the previous frame's levels: prev + (target - prev) * ease
-//     (ease = 1 - exp(-dt / adapt speed); ease = 1 snaps).
-//   Manual: lo = black point, hi = max(white point, black point + 0.05).
-// Output: (lo, hi, mu, sigma).
+//     (ease = 1 - exp(-dt / adapt speed); ease = 1, or a light jump, snaps).
+//     Manual: lo = black point, hi = max(white point, black point + 0.05).
+//     Other modes ignore it.
 
 #include "common.effect"
 
@@ -20,6 +26,9 @@ uniform float2 src_size;
 uniform float2 dst_size;
 uniform int block;
 uniform float keep_transparency;
+uniform texture2d prev_stats;
+uniform float have_prev; // 1: prev_stats is the previous frame of this grid
+uniform float jump_delta;
 
 uniform texture2d sums;
 uniform texture2d prev;
@@ -27,46 +36,56 @@ uniform float levels_auto;
 uniform float black_point;
 uniform float white_point;
 uniform float ease;
+uniform float cell_total;
+uniform float jump_share;
 
 float4 PSReduceStats(VertData v_in) : TARGET
 {
 	int2 t = texel_of(v_in.uv, dst_size);
 	int2 n = int2(src_size);
-	float3 acc = float3(0.0, 0.0, 0.0);
+	float4 acc = float4(0.0, 0.0, 0.0, 0.0);
 	for (int j = 0; j < block; j++) {
 		for (int i = 0; i < block; i++) {
 			int2 p = t * block + int2(i, j);
 			if (p.x < n.x && p.y < n.y) {
 				float4 s = src.Load(int3(p, 0));
 				float w = (keep_transparency > 0.5 && s.a < 0.5) ? 0.0 : 1.0;
-				acc += float3(w, w * s.x, w * s.x * s.x);
+				float changed = 0.0;
+				if (have_prev > 0.5 && abs(s.x - prev_stats.Load(int3(p, 0)).x) > jump_delta)
+					changed = 1.0;
+				acc += float4(w, w * s.x, w * s.x * s.x, changed);
 			}
 		}
 	}
-	return float4(acc, 0.0);
+	return acc;
 }
 
 float4 PSReduceSum(VertData v_in) : TARGET
 {
 	int2 t = texel_of(v_in.uv, dst_size);
 	int2 n = int2(src_size);
-	float3 acc = float3(0.0, 0.0, 0.0);
+	float4 acc = float4(0.0, 0.0, 0.0, 0.0);
 	for (int j = 0; j < block; j++) {
 		for (int i = 0; i < block; i++) {
 			int2 p = t * block + int2(i, j);
 			if (p.x < n.x && p.y < n.y)
-				acc += src.Load(int3(p, 0)).rgb;
+				acc += src.Load(int3(p, 0));
 		}
 	}
-	return float4(acc, 0.0);
+	return acc;
 }
 
 float4 PSLevels(VertData v_in) : TARGET
 {
-	// Texel (0, 0) of the 1x1 inputs, taken from the uv: a shader that doesn't
-	// read its uv loses that attribute in GLSL, and libobs's OpenGL draw fails.
-	int2 t = texel_of(v_in.uv, float2(1.0, 1.0));
-	float3 s = sums.Load(int3(t, 0)).rgb;
+	// Which texel, from the uv: a shader that doesn't read its uv loses that
+	// attribute in GLSL, and libobs's OpenGL draw fails.
+	int2 t = texel_of(v_in.uv, float2(2.0, 1.0));
+	float4 s = sums.Load(int3(0, 0, 0));
+	float share = s.w / max(cell_total, 1.0);
+	bool jump = have_prev > 0.5 && share >= jump_share;
+	if (t.x == 1)
+		return float4(jump ? 1.0 : 0.0, share, 0.0, 0.0);
+
 	float mu = 0.5;
 	float sigma = 0.0;
 	if (s.x > 0.0) {
@@ -92,8 +111,8 @@ float4 PSLevels(VertData v_in) : TARGET
 				lo = 0.95;
 			}
 		}
-		if (ease < 1.0) {
-			float2 p = prev.Load(int3(t, 0)).xy;
+		if (ease < 1.0 && !jump) {
+			float2 p = prev.Load(int3(0, 0, 0)).xy;
 			lo = p.x + (lo - p.x) * ease;
 			hi = p.y + (hi - p.y) * ease;
 		}

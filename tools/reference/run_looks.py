@@ -8,7 +8,8 @@ For every filter it checks, through tools/harness:
     independently of the plugin) plus Custom;
   - each look applies, both named in the settings (as a scene file or a
     script would) and chosen the way the properties window chooses it; the
-    settings then equal the look's, and the picture matches the reference;
+    settings then equal the look's, and the picture matches the reference
+    (with the look's Soften; for the boiling looks, the held glyphs);
   - changing a setting the look controls turns the Look to Custom, and a
     Grid setting doesn't;
   - mode-specific settings appear only in their own filter, and the
@@ -57,6 +58,7 @@ LOOKS = {
 # A setting each filter's looks control, with a value no look uses.
 CONTROLLED_CHANGE = {"ink": {"gamma": 1.2}, "mosaic": {"charset": "ascii"}, "poster": {"poster_levels": 3},
                      "console": {"palette": "custom"}}
+MOTION_PROPS = {"soften", "hold", "settle", "boil", "boil_spread", "boil_linger"}
 MODE_PROPS = {"ink": {"ink_color", "ink_custom_color", "ink_background", "ink_lightness", "saturation", "gamma",
                       "shape", "ink_levels", "adapt_speed", "black_point", "white_point"},
               "poster": {"poster_levels"},
@@ -148,6 +150,8 @@ def main():
                 for n in names:
                     r.check((n in props) == (m == mode), "%s: property %s present only in %s" % (mode, n, m))
             r.check(not props["custom_chars"]["visible"], "%s: Custom characters hidden" % mode)
+            for n in sorted(MOTION_PROPS):
+                r.check(n in props and props[n]["visible"], "%s: Motion's %s shown" % (mode, n))
             if mode == "ink":
                 r.check(not props["ink_custom_color"]["visible"], "ink: custom ink hidden for Cell")
                 r.check(props["adapt_speed"]["visible"], "ink: Adapt speed shown for Auto")

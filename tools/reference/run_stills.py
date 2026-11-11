@@ -8,6 +8,10 @@ build configured with -DGLYPHNOTIC_DEBUG_TOOLS=ON) on a still, then
 compare.py on the grid dump and the output frame, and prints a Markdown
 table. Exit status 0 when every case passes.
 
+Every case runs with motion off (Soften 0, Hold 0, Settle 0, Boil 0) unless
+it sets a motion setting itself; the Soften cases check the blur against the
+reference's.
+
 Windows: BUILD_DIR is e.g. build_dbg/RelWithDebInfo (glyphnotic.dll and
 glyphnotic-harness.exe), OBS_DIR defaults to C:\\Program Files\\obs-studio.
 Linux: BUILD_DIR holds glyphnotic.so and glyphnotic-harness, OBS_DIR defaults
@@ -44,8 +48,12 @@ PALETTE_SETTINGS = dict({"palette": "custom"},
                         **{"palette_%d" % k: obs_color(c) for k, c in enumerate(CUSTOM_PALETTE)})
 
 
+MOTION_OFF = {"soften": 0, "hold": 0, "settle": 0, "boil": 0}
+
+
 def case(name, still, mode, settings=None, on_scene=False, press=None):
-    return dict(name=name, still=still, mode=mode, settings=settings or {}, on_scene=on_scene, press=press)
+    return dict(name=name, still=still, mode=mode, settings=dict(MOTION_OFF, **(settings or {})),
+                on_scene=on_scene, press=press)
 
 
 CASES = [
@@ -134,6 +142,27 @@ CASES = [
     case("console-bbb-alpha-lines", "bbb-alpha.png", "console", {"charset": "lines"}),
     case("console-bbb-alpha-ascii-opaque-scene", "bbb-alpha.png", "console",
          {"charset": "ascii", "keep_transparency": False}, on_scene=True),
+
+    # Soften (Phase 3): the default 0.6 px, the 2 px end, a small 0.1 px, with
+    # cell scales, alignment, transparency and the scene path, in every mode.
+    case("soften-victor-mosaic-ascii-0.6", "victor.png", "mosaic", {"charset": "ascii", "soften": 0.6}),
+    case("soften-victor-mosaic-ascii-2.0", "victor.png", "mosaic", {"charset": "ascii", "soften": 2.0}),
+    case("soften-patches-mosaic-blocks-0.6", "patches.png", "mosaic", {"charset": "blocks", "soften": 0.6}),
+    case("soften-patches-mosaic-lines-2-topleft-2.0", "patches.png", "mosaic",
+         {"charset": "lines", "cell_scale": 2, "alignment": "top_left", "soften": 2.0}),
+    case("soften-spring-mosaic-every-0.1", "spring.png", "mosaic", {"charset": "every", "soften": 0.1}),
+    case("soften-bbb-alpha-mosaic-ascii-1.0", "bbb-alpha.png", "mosaic", {"charset": "ascii", "soften": 1.0}),
+    case("soften-bbb-alpha-mosaic-blocks-3-scene-0.6", "bbb-alpha.png", "mosaic",
+         {"charset": "blocks", "cell_scale": 3, "soften": 0.6}, on_scene=True),
+    case("soften-victor-ink-ascii-0.6", "victor.png", "ink", {"charset": "ascii", "soften": 0.6}),
+    case("soften-sintel-ink-every-2.0", "sintel.png", "ink", {"charset": "every", "soften": 2.0}),
+    case("soften-bbb-alpha-ink-ascii-4-1.5", "bbb-alpha.png", "ink", {"charset": "ascii", "cell_scale": 4,
+                                                                       "soften": 1.5}),
+    case("soften-sintel-poster-lines-0.6", "sintel.png", "poster", {"charset": "lines", "soften": 0.6}),
+    case("soften-spring-poster-ascii-2-2.0", "spring.png", "poster",
+         {"charset": "ascii", "cell_scale": 2, "soften": 2.0}),
+    case("soften-victor-console-lines-0.6", "victor.png", "console", {"charset": "lines", "soften": 0.6}),
+    case("soften-bbb-alpha-console-lines-2.0", "bbb-alpha.png", "console", {"charset": "lines", "soften": 2.0}),
 ]
 
 

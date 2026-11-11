@@ -3,16 +3,21 @@
     python run_levels.py --build BUILD_DIR [--obs OBS_DIR] [--out OUT_DIR] [--renderer d3d11|opengl]
 
 The harness runs Ink on victor.png, dumps the grid, switches the image to
-another still, runs a number of frames at 30 fps and dumps again. Cases:
+another still, runs a number of frames at 30 fps and dumps again. Motion is
+off (Soften, Hold, Boil 0), so the reference applies. Cases:
 
-  ease-1.5s   Auto, Adapt speed 1.5 s, switch to a darkened victor (same size):
-              the first dump's levels are victor's target; the second lies on
-              the easing curve lo = T2 + (T1 - T2) exp(-n dt / 1.5 s), for the
-              number of frames n between the two dumps (allowing up to 8 frames
-              for the switch to reach the filter), and strictly between T1 and T2
+  ease-1.5s   Auto, Adapt speed 1.5 s, switch to a darkened victor (same size,
+              encoded values x 0.8, not a light jump): the first dump's levels
+              are victor's target; the second lies on the easing curve
+              lo = T2 + (T1 - T2) exp(-n dt / 1.5 s), for the number of frames
+              n between the two dumps (allowing up to 8 frames for the switch
+              to reach the filter), and strictly between T1 and T2
   ease-0.2s   the same at 0.2 s: after 30 frames the levels are within 1% of T2
   resize      Auto, switch to spring.png (a different size): the levels snap
               to spring's target at once (a source size change resets the grid)
+  jump        Auto, Adapt speed 1.5 s, switch to a dim victor (encoded values
+              x 0.3; 88% of cells change lightness by more than 0.12): a light
+              jump, so the levels snap to its target at once
   manual      Manual levels ignore the picture: both dumps use the black and
               white points
 
@@ -57,22 +62,27 @@ def main():
 
     victor = os.path.join(STILLS, "victor.png")
     img1 = imageio_min.read_png(victor)
-    dark = os.path.join(a.out, "victor-dark.png")
-    img_dark = img1.copy()
-    img_dark[..., :3] = (img1[..., :3].astype(np.float64) * 0.5).round().astype(np.uint8)
-    imageio_min.write_png(dark, img_dark)
+    def darkened(factor, name):
+        path = os.path.join(a.out, name)
+        img = img1.copy()
+        img[..., :3] = (img1[..., :3].astype(np.float64) * factor).round().astype(np.uint8)
+        imageio_min.write_png(path, img)
+        return path
+
+    dark = darkened(0.8, "victor-dark.png")
+    dim = darkened(0.3, "victor-dim.png")
     spring = os.path.join(STILLS, "spring.png")
 
     manual = {"ink_levels": "manual", "black_point": 0.2, "white_point": 0.7}
     cases = [("ease-1.5s", dark, {"adapt_speed": 1.5}), ("ease-0.2s", dark, {"adapt_speed": 0.2}),
-             ("resize", spring, {}), ("manual", dark, manual)]
+             ("resize", spring, {}), ("jump", dim, {"adapt_speed": 1.5}), ("manual", dark, manual)]
 
     font = ref.Font()
     all_pass = True
     print("| Case | Frames | lo, hi first | lo, hi second | Expected second | Glyph match | Result |")
     print("| --- | --- | --- | --- | --- | --- | --- |")
     for name, second, settings in cases:
-        settings = dict({"charset": "ascii"}, **settings)
+        settings = dict({"charset": "ascii", "soften": 0, "hold": 0, "settle": 0, "boil": 0}, **settings)
         d1p, d2p = os.path.join(a.out, name + "-1.json"), os.path.join(a.out, name + "-2.json")
         cmd = [harness, "--obs", a.obs, "--plugin", plugin, "--plugin-data", os.path.join(ROOT, "data"),
                "--image", victor, "--filter", "glyphnotic_ink", "--settings", json.dumps(settings),
@@ -105,7 +115,7 @@ def main():
             expected = "%.4f..%.4f, %.4f..%.4f" % (lower[0], upper[0], lower[1], upper[1])
             if tau < 0.5:
                 checks["converged"] = bool((np.abs(l2 - t2) <= 0.01 * np.abs(t1 - t2)).all())
-        elif name == "resize":
+        elif name in ("resize", "jump"):
             checks["snapped"] = bool(np.abs(l2 - t2).max() < 1e-5)
             expected = "%.4f, %.4f" % tuple(t2)
         else:

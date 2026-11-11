@@ -1,6 +1,6 @@
 # Builder notes
 
-How Glyphnotic is built and tested in practice, from Phases 0–2. Commands
+How Glyphnotic is built and tested in practice, from Phases 0–3. Commands
 over prose; the why is in `docs/build-history/`.
 
 ## Standing rules
@@ -28,8 +28,9 @@ $env:PATH = "C:\Program Files (x86)\Microsoft Visual Studio\18\BuildTools\Common
 ```
 
 Bash is fine for git, `gh`, `docker` and the Python scripts. For multi-line
-edit scripts, write a `.py` file and run it; heredocs in the agent's Bash
-tool have mangled backslashes.
+edit scripts, write a `.py` file (in the session scratchpad) and run it;
+heredocs in the agent's Bash tool have mangled backslashes, and one holding
+Python's `'''` strings failed to parse at all.
 
 ## Build (Windows, repository root)
 
@@ -94,10 +95,20 @@ repository's `data\`, so shader edits need no rebuild; don't rebuild
 | Looks and properties | `... run_looks.py --build ..\..\build_dbg\RelWithDebInfo` (add `--renderer opengl --out ..\..\build_looks_gl`) | ~2 min |
 | Ink levels over time | `... run_levels.py --build ..\..\build_dbg\RelWithDebInfo` (same for OpenGL) | <1 min |
 | Color paths | `... run_color_paths.py --build ..\..\build_dbg\RelWithDebInfo` | ~1 min |
+| Motion over time | `... run_motion.py --build ..\..\build_dbg\RelWithDebInfo` (add `--renderer opengl --out ..\..\build_motion_gl`) | ~11 min |
 
-One case: `run_stills.py ... --only ink-victor`. Every suite exits 0 when
-all pass and must pass on both renderers. Harness options and the dump
-format: `tools/README.md`.
+One case: `run_stills.py ... --only ink-victor`; some motion suites:
+`run_motion.py ... --only boil,jump` (suites: source, flicker, still, boil,
+jump, hold, settle; `--flicker-frames 150` for a quick flicker run). Every
+suite exits 0 when all pass and must pass on both renderers. The two
+renderers' chains can run at the same time with separate `--out` folders
+(about 40 minutes each, all suites). Harness options, the dump and the
+recording format: `tools/README.md`.
+
+Every `run_stills.py` case runs with motion off unless it sets a motion
+setting: a filter created without a look takes the first look's values as
+defaults, including Soften 0.6. Scripts that compare with the reference must
+set `soften`, `hold`, `settle`, `boil` themselves.
 
 ## OBS by hand
 
@@ -146,9 +157,12 @@ MSYS_NO_PATHCONV=1 docker run --rm -v "$PWD:/src:ro" -v "$PWD/build_linux_check:
 ```
 
 About 5 minutes. It builds with GCC (warnings as errors), runs the unit
-tests, runs OBS 33 under `xvfb-run` with each filter on an image source, and
-checks the log; `build_linux_check/result.txt` lists the checks. Exit 0 =
-pass. Add any new filter to the script's test collection.
+tests, runs OBS 33 under `xvfb-run` with each filter on an image source (and
+Ink's boiling looks Static and Fever, from Phase 3), and checks the log;
+`build_linux_check/result.txt` lists the checks. Exit 0 = pass. Add any new
+filter or code path worth a GLSL check to the script's test collection. If
+it stops in "Installing OBS 33" with an SSL error from Launchpad, that's the
+network: run it again.
 
 ## CI
 
@@ -180,3 +194,20 @@ gh run watch <run id> --exit-status
   alone; without it the filter's own update can hide a broken callback.
 - **Settings keys and values are saved in scene files**: fixed once shipped
   in a phase (lists in each phase report).
+- **Direct3D: "Not all shader parameters were set"** fails the draw when a
+  uniform that a technique's shaders reference was never set, even on a
+  path that doesn't use it (a shared helper counts). OpenGL doesn't
+  complain, so set every uniform of an effect on every path.
+- **Integer hashing works in effects** on both renderers: `uint`, `u`
+  literals, `>>`, `^`. GLSL 3.30 doesn't mix `int` and `uint` in
+  arithmetic, so convert explicitly (`uint(x)`).
+- **Cost scales differ by orders of magnitude between modes** (median cost
+  range on victor: Ink 0.3, Console 0.014, Poster 9e-6, Mosaic 3e-6). Test
+  tolerances on costs must be relative to the cell's range; an absolute
+  1e-6 hid real behavior in Mosaic.
+- **Hold can keep every glyph through a change**, so don't find a switch
+  frame from glyph changes: the recording's header has the frame's mean
+  lightness, which identifies the still.
+- **Light jump needs a big change:** halving victor's encoded values changes
+  only 46% of cells by more than 0.12 (no jump); 0.3× or a different still
+  (a crop of sintel: 69%) is one.

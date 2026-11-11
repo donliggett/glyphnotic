@@ -12,6 +12,10 @@
 //
 // The input is premultiplied by alpha in encoded space, as OBS renders its
 // sources, so color is divided by alpha before decoding.
+//
+// DrawSoft (Soften on): `image` is the Soften pass's output, the input
+// blurred along rows, and each source pixel is read blurred along its
+// column here (the same kernel; see soften.effect).
 
 #include "common.effect"
 
@@ -19,6 +23,11 @@ uniform texture2d image;
 uniform float2 sample_size; // target size in samples
 uniform float2 grid_offset; // source pixel of the grid's top-left corner
 uniform int cell_scale;     // s, 1..4
+
+// DrawSoft only
+uniform float2 source_size;
+uniform float sigma;
+uniform int radius;
 
 float3 straight_linear(float4 px)
 {
@@ -28,16 +37,32 @@ float3 straight_linear(float4 px)
 	return srgb_decode(enc);
 }
 
-float4 PSSample(VertData v_in) : TARGET
+// A source pixel blurred along its column (DrawSoft).
+float4 load_soft(int2 p)
 {
-	int2 sp = texel_of(v_in.uv, sample_size);
+	int last = int(source_size.y) - 1;
+	float4 sum = float4(0.0, 0.0, 0.0, 0.0);
+	float wsum = 0.0;
+	for (int j = -radius; j <= radius; j++) {
+		float w = exp(-0.5 * float(j * j) / (sigma * sigma));
+		int y = clamp(p.y + j, 0, last);
+		sum += image.Load(int3(p.x, y, 0)) * w;
+		wsum += w;
+	}
+	return sum / wsum;
+}
+
+float4 sample_block(float2 uv, bool soft)
+{
+	int2 sp = texel_of(uv, sample_size);
 	int2 origin = int2(grid_offset) + sp * cell_scale;
 
 	float3 sum = float3(0.0, 0.0, 0.0);
 	float asum = 0.0;
 	for (int j = 0; j < cell_scale; j++) {
 		for (int i = 0; i < cell_scale; i++) {
-			float4 px = image.Load(int3(origin.x + i, origin.y + j, 0));
+			int2 p = int2(origin.x + i, origin.y + j);
+			float4 px = soft ? load_soft(p) : image.Load(int3(p, 0));
 			sum += straight_linear(px) * px.a;
 			asum += px.a;
 		}
@@ -49,11 +74,30 @@ float4 PSSample(VertData v_in) : TARGET
 	return float4(linear_to_oklab(lin), asum / float(cell_scale * cell_scale));
 }
 
+float4 PSSample(VertData v_in) : TARGET
+{
+	return sample_block(v_in.uv, false);
+}
+
+float4 PSSampleSoft(VertData v_in) : TARGET
+{
+	return sample_block(v_in.uv, true);
+}
+
 technique Draw
 {
 	pass
 	{
 		vertex_shader = VSDefault(v_in);
 		pixel_shader = PSSample(v_in);
+	}
+}
+
+technique DrawSoft
+{
+	pass
+	{
+		vertex_shader = VSDefault(v_in);
+		pixel_shader = PSSampleSoft(v_in);
 	}
 }

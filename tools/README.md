@@ -4,12 +4,13 @@ Test tools for Glyphnotic. None of this ships with the plugin.
 
 | Path | What it is |
 | --- | --- |
-| `harness/harness.cpp` | `glyphnotic-harness`: runs Glyphnotic filters on a still image in a headless libobs (no OBS window); writes the grid dump, an output frame or OBS's canvas texture, and lag and GPU-time figures |
-| `reference/reference.py` | The reference implementation (Python + NumPy, float64) of Sample, Cell stats, Ink's levels and Score for all four modes, written from `docs/SPEC.md` |
+| `harness/harness.cpp` | `glyphnotic-harness`: runs Glyphnotic filters on a still image (or a sequence of stills, with fresh noise on every frame) in a headless libobs (no OBS window); writes the grid dump, a per-frame recording, output frames or OBS's canvas texture, and lag and GPU-time figures |
+| `reference/reference.py` | The reference implementation (Python + NumPy, float64) of Soften, Sample, Cell stats, Ink's levels and Score for all four modes (a fresh pick: Hold, Settle and Boil act over time), written from `docs/SPEC.md` |
 | `reference/compare.py` | Compares one grid dump (and output frame) with the reference |
 | `reference/run_stills.py` | Runs the harness and `compare.py` over every test still, for every mode, and prints a table |
 | `reference/run_looks.py` | Checks the looks (present, applied from settings and from the properties window, Custom on change) and which properties each filter shows |
-| `reference/run_levels.py` | Checks Ink's Auto levels over time (easing, snapping on a size change) and Manual levels |
+| `reference/run_levels.py` | Checks Ink's Auto levels over time (easing, snapping on a size change and a light jump) and Manual levels |
+| `reference/run_motion.py` | Checks the motion settings over time: flicker under noise for every look, Boil 0 on a still, Boil's rate, linger and spread, Light jump, Hold against the reference's costs, Settle |
 | `reference/run_color_paths.py` | Checks colors along OBS's other color paths: Color Correction before and after, 10-bit and HDR canvases, 16-bit and HDR sources |
 | `reference/make_stills.py` | Rebuilds `tests/stills/` (see `tests/stills/ATTRIBUTION.md`) |
 | `reference/imageio_min.py` | PNG/PAM/BMP reading and PNG writing with only NumPy |
@@ -73,10 +74,17 @@ Reference comparison, from `tools\reference`:
 ..\..\.venv\Scripts\python run_color_paths.py --build ..\..\build_dbg\RelWithDebInfo
 ```
 
+```powershell
+..\..\.venv\Scripts\python run_motion.py --build ..\..\build_dbg\RelWithDebInfo
+```
+
 The second command runs OBS's OpenGL renderer on Windows, which checks the
-effects' GLSL translation without a Linux machine. `run_looks.py` and
-`run_levels.py` take `--renderer opengl` too (with `--out` set to a folder of
-their own).
+effects' GLSL translation without a Linux machine. `run_looks.py`,
+`run_levels.py` and `run_motion.py` take `--renderer opengl` too (with
+`--out` set to a folder of their own). `run_motion.py` takes about 11
+minutes, most of it the flicker suite (20 runs of 600 frames at 30 fps);
+`--only boil,jump` runs some of its suites, and `--flicker-frames 150` a
+shorter flicker test.
 
 ## Linux
 
@@ -124,6 +132,10 @@ Reference comparison, from `tools/reference`:
 ../../.venv/bin/python run_color_paths.py --build ../../build_dbg
 ```
 
+```bash
+../../.venv/bin/python run_motion.py --build ../../build_dbg
+```
+
 The Linux steps follow the Windows ones and the harness has Linux code
 paths, but they haven't been run yet (see `docs/build-history/phase-1.md`).
 
@@ -135,7 +147,8 @@ container: it installs OBS 33 from OBS's PPA, builds the plugin as CI does
 (warnings as errors) and runs the unit tests, installs it to `/usr`, runs
 OBS under `xvfb-run` as an ordinary user on a test collection with one
 image source per Glyphnotic filter (Ink, Mosaic, Poster, Console, each on
-its first look), stops OBS with SIGINT after 40 s so it shuts down cleanly,
+its first look, plus Ink's boiling looks Static and Fever), stops OBS with
+SIGINT after 40 s so it shuts down cleanly,
 and checks OBS's log: the plugin loaded, all four filters were created, no
 Glyphnotic errors, no failed draws, "Number of memory leaks: 0".
 
@@ -193,9 +206,10 @@ On Linux the same commands run from `.venv/bin/`.
 
 ## What the scripts report
 
-Results go to `build_stills/`, `build_looks/`, `build_levels/` (or `--out`)
-and `build_color_paths/` at the repository root: grid dumps, frames as
-`.pam`, settings and properties as JSON, `results.json`. Each script
+Results go to `build_stills/`, `build_looks/`, `build_levels/`,
+`build_motion/` (or `--out`) and `build_color_paths/` at the repository
+root: grid dumps, recordings (`.rec`), frames as `.pam`, settings and
+properties as JSON, `results.json`. Each script
 prints a Markdown table and exits with 0 when every case passes. One case
 alone: `run_stills.py --only victor-ascii` (or `--only ink-` for one mode). One dump by hand:
 
@@ -203,7 +217,9 @@ alone: `run_stills.py --only victor-ascii` (or `--only ink-` for one mode). One 
 ..\..\.venv\Scripts\python compare.py ..\..\tests\stills\victor.png ..\..\build_stills\victor-ascii-1.json --frame ..\..\build_stills\victor-ascii-1.pam
 ```
 
-In OBS itself, a debug build's filter shows a **Dump grid (debug)** button.
+In OBS itself, a debug build's filter shows **Dump grid (debug)** and
+**Record grid (debug)** buttons (Record grid needs the environment variables
+below, so it's meant for the harness).
 It writes `grid-dump.json` to OBS's plugin config folder
 (`%APPDATA%\obs-studio\plugin_config\glyphnotic\` on Windows,
 `~/.config/obs-studio/plugin_config/glyphnotic/` on Linux), or to the path in
@@ -221,6 +237,8 @@ glyphnotic-harness --obs <dir> --plugin <module> --plugin-data <dir>
          [--ui-set <json> [--ui-no-update]] [--press <button>]... [--wait-frames <n>]
          [--settings-out <json>] [--properties-out <json>]
          [--then-image <png> --then-frames <n> --dump2 <json>]
+         [--also <png>]... [--period <frames>] [--noise <sigma>] [--noise-seed <n>] [--frame-sequence]
+         [--record <bin> --record-frames <n> [--record-colors]] [--frame-pair <prefix>]
 ```
 
 It starts libobs with the still's size as the canvas (rounded up to a
@@ -261,24 +279,54 @@ effect changes need no rebuild.
 - `--then-image` switches the image source to another PNG after the first
   dump, runs `--then-frames` frames and presses Dump grid again into
   `--dump2` (`run_levels.py` uses it).
+- `--also`, `--period`, `--noise` (or `--frame-sequence` alone) use the
+  harness's frame-sequence source instead of OBS's image source: it shows
+  `--image` and then each `--also` (same size) for `--period` frames each
+  (0: the first only), with fresh Gaussian noise of standard deviation
+  `--noise` (8-bit units: 2 is 2/255) added to every color channel of every
+  frame and rounded, seeded by `--noise-seed`. It premultiplies by alpha as
+  OBS's image loader does, and hands a filter the same bytes as OBS's image
+  source (`run_motion.py`'s source suite checks this).
+- `--record` presses Record grid on the first Glyphnotic filter: the plugin
+  writes `--record-frames` consecutive frames (with `--record-colors`, the
+  cell colors too; format below) and the harness waits for the file.
+- `--frame-pair` saves two consecutive output frames as `<prefix>-0.pam` and
+  `<prefix>-1.pam`.
 
 The harness points the plugin's dump at `--dump` itself (through
-`GLYPHNOTIC_DUMP_PATH`).
+`GLYPHNOTIC_DUMP_PATH`), and the recording at `--record` (through
+`GLYPHNOTIC_RECORD_PATH`, `GLYPHNOTIC_RECORD_FRAMES` and
+`GLYPHNOTIC_RECORD_COLORS`).
 
 It prints OBS's memory-leak count at exit.
 
 ### Grid dump format
 
-JSON (`version` 2) with the settings (`mode`, `look`, `charset_name`,
+JSON (`version` 3) with the settings (`mode`, `look`, `charset_name`,
 `cell_scale`, `alignment`, `edges`, `keep_transparency`), the instance's
 frame counter (`frame`), the character set as code points (`charset`), the
 geometry (`source_width`, `source_height`, `cells_x`, `cells_y`, `offset_x`,
-`offset_y`), per mode Ink's settings (`ink`: `color`, `a`, `b` (the fixed
+`offset_y`), the motion settings (`motion`: `soften`, `hold`, `settle`,
+`boil`, `boil_spread`, `boil_linger`, plus Hold's `hold_threshold` and the
+instance's Boil `seed`), this frame's `light_jump` and `jump_share` (the
+share of cells whose lightness changed by more than 0.12), per mode Ink's settings (`ink`: `color`, `a`, `b` (the fixed
 or custom ink's OKLab a, b), `background`, `lightness`, `saturation`,
 `gamma`, `shape`, `levels`, `adapt_speed`, `black_point`, `white_point`)
 and this frame's `levels` (`lo`, `hi`, `μ`, `σ`), Poster's `poster_levels`,
 Console's `palette_name` and `palette` (16 sRGB triples), and per-cell
 arrays in row-major order:
-`glyph` (shown glyph index), `held`, `cost` (best cost), `mean_lab`,
+`glyph` (shown glyph index), `held`, `boil` (frames the boiled glyph still
+shows, this one included; 0 = not swapping), `cost` (best cost), `mean_lab`,
 `mean_alpha` (Cell stats), `opaque`, `text_lab`, `bg_lab` (OKLab) and
 `text_srgb`, `bg_srgb` (0–255, unrounded; Poster's before snapping).
+
+### Recording format
+
+Binary, little endian, one record per frame from the frame Record grid was
+pressed: a header of 8 uint32 (`GNRF` as 0x46524E47, the instance's frame
+counter, `cells_x`, `cells_y`, light jump 0/1, the jump share as float32
+bits, colors 0/1, the mean of the cells' raw mean lightness as float32
+bits), then `held` uint16 per cell, `shown` uint16 per cell, `boil` uint8
+per cell, and with colors float32 × 6 per cell (text OKLab, background
+OKLab), cells in row-major order. `run_motion.py`'s `read_recording` reads
+it.

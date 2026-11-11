@@ -21,7 +21,7 @@ constexpr const char *kCellScale = "cell_scale";
 constexpr const char *kAlignment = "alignment";
 constexpr const char *kEdges = "edges";
 constexpr const char *kKeepTransparency = "keep_transparency";
-// Motion (Phase 3 adds the controls; looks already set the values).
+// Motion
 constexpr const char *kSoften = "soften";
 constexpr const char *kHold = "hold";
 constexpr const char *kSettle = "settle";
@@ -49,6 +49,8 @@ constexpr const char *kPaletteColorPrefix = "palette_"; // palette_0 .. palette_
 
 constexpr const char *kLookCustom = "custom";
 
+constexpr double kMaxSoften = 2.0; // px
+
 enum class InkColor { Cell = 0, Green, Amber, White, Custom };
 
 // Settings the render thread reads, resolved from the source settings.
@@ -58,6 +60,14 @@ struct Settings {
 	Alignment alignment = Alignment::Center;
 	bool edges_transparent = false;
 	bool keep_transparency = true;
+
+	// Motion (the defaults are the first looks')
+	double soften = 0.6;  // sigma in source pixels; 0 = off
+	int hold = 25;        // 0-100
+	int settle = 0;       // percent, 0-95
+	int boil = 0;         // 0-100
+	int boil_spread = 20; // 0-100
+	int boil_linger = 2;  // frames, 1-12
 
 	// Ink
 	InkColor ink_color = InkColor::Cell;

@@ -1,9 +1,10 @@
-"""Glyphnotic reference implementation: Sample, Cell stats, Levels and Score.
+"""Glyphnotic reference implementation: Soften, Sample, Cell stats, Levels and Score.
 
 Plain Python + NumPy, float64, written from docs/SPEC.md (not from the
-plugin's shaders). It handles single stills with motion off and outputs the
-glyph index per cell plus the cell colors. It exists only to check the
-plugin; it isn't shipped.
+plugin's shaders). It handles single stills with the other motion settings
+off (Hold, Settle and Boil act over time) and outputs the glyph index per
+cell plus the cell colors. It exists only to check the plugin; it isn't
+shipped.
 
 It covers all four modes: Mosaic, Poster (Mosaic, colors snapped when
 drawn), Ink (Auto and Manual levels) and Console.
@@ -138,26 +139,64 @@ def make_grid(width, height, scale, alignment):
     return dict(scale=scale, cells_x=cx, cells_y=cy, offset_x=ox, offset_y=oy)
 
 
-def obs_input(img):
+def soften_radius(sigma):
+    """Soften's kernel radius: ceil(3 sigma), 0 when off."""
+    return int(np.ceil(3.0 * sigma - 1e-9)) if sigma > 0 else 0
+
+
+def soften_weights(sigma):
+    r = soften_radius(sigma)
+    i = np.arange(-r, r + 1, dtype=np.float64)
+    w = np.exp(-0.5 * i * i / (sigma * sigma))
+    return w / w.sum()
+
+
+def gaussian_blur(x, sigma):
+    """Separable Gaussian blur of an (h, w, c) array, taps beyond an edge taking the edge pixel."""
+    r = soften_radius(sigma)
+    if r == 0:
+        return x
+    w = soften_weights(sigma)
+    for axis in (1, 0):
+        pad = [(0, 0)] * x.ndim
+        pad[axis] = (r, r)
+        xp = np.pad(x, pad, mode="edge")
+        n = x.shape[axis]
+        x = sum(w[k] * np.take(xp, np.arange(k, k + n), axis=axis) for k in range(2 * r + 1))
+    return x
+
+
+def obs_input(img, soften=0.0):
     """Straight sRGB-encoded RGBA in [0, 1] as the filter recovers it from OBS.
 
     OBS hands filters 8-bit color premultiplied by alpha in encoded space
     (libobs's image loader stores round(c * a / 255)); the Sample pass divides
     alpha back out. Colors of nearly transparent pixels are therefore coarse.
+    Soften blurs those premultiplied values (and alpha) before alpha is
+    divided out.
     """
     f = img.astype(np.float64)
     a = f[..., 3:4]
     prem = np.floor(f[..., :3] * (a / 255.0) + 0.5)  # gs_premultiply_xyza: (u8)(c*a*255 + 0.5)
+    if soften > 0:
+        b = gaussian_blur(np.concatenate([prem, a], axis=-1) / 255.0, soften)
+        prem, a = b[..., :3], b[..., 3:4]
+        with np.errstate(invalid="ignore", divide="ignore"):
+            straight = np.where((a > 0) & (a < 1), np.clip(prem / a, 0.0, 1.0), prem)
+        return np.concatenate([straight, a], axis=-1)
     with np.errstate(invalid="ignore", divide="ignore"):
         straight = np.where((a > 0) & (a < 255), np.clip(prem / a, 0.0, 1.0), f[..., :3] / 255.0)
     return np.concatenate([straight, a / 255.0], axis=-1)
 
 
-def sample_pass(img, grid):
-    """img: uint8 (h, w, 4) straight RGBA. Returns lab (cy, cx, 128, 3), alpha (cy, cx, 128)."""
+def sample_pass(img, grid, soften=0.0):
+    """img: uint8 (h, w, 4) straight RGBA. Returns lab (cy, cx, 128, 3), alpha (cy, cx, 128).
+
+    Soften blurs the whole source, so the cells near the grid's edge see the
+    pixels beyond it."""
     s, cx, cy = grid["scale"], grid["cells_x"], grid["cells_y"]
     ox, oy = grid["offset_x"], grid["offset_y"]
-    crop = obs_input(img[oy:oy + cy * GLYPH_H * s, ox:ox + cx * GLYPH_W * s])
+    crop = obs_input(img, soften)[oy:oy + cy * GLYPH_H * s, ox:ox + cx * GLYPH_W * s]
     lin = srgb_decode(crop[..., :3])
     a = crop[..., 3]
     # Alpha-weighted (premultiplied) mean of each s*s block, in linear RGB.
@@ -409,8 +448,8 @@ def console_colors(lab, alpha, glyphs, pal, chosen):
 # ---------------------------------------------------------------------------
 
 def run(img, mode="mosaic", charset="blocks", custom="", scale=1, alignment="center", font=None,
-        keep_transparency=True, ink=None, palette=None, levels=None):
-    """Runs the reference on a still with motion off.
+        keep_transparency=True, ink=None, palette=None, levels=None, soften=0.0):
+    """Runs the reference on a still with Hold, Settle and Boil off (a fresh pick).
 
     ink: Ink settings (keys of INK_DEFAULTS); palette: Console's 16 sRGB triples (default VGA);
     levels: Ink's (lo, hi) to use instead of the still's own (to check eased levels).
@@ -420,7 +459,7 @@ def run(img, mode="mosaic", charset="blocks", custom="", scale=1, alignment="cen
     if len(chars) < 2:
         chars, glyphs = build_charset(font, "blocks")
     grid = make_grid(img.shape[1], img.shape[0], scale, alignment)
-    lab, alpha = sample_pass(img, grid)
+    lab, alpha = sample_pass(img, grid, soften)
     mean_lab, mean_alpha = stats_pass(lab, alpha)
     r = dict(grid=grid, chars=chars, glyphs=glyphs, lab=lab, alpha=alpha, mean_lab=mean_lab,
              mean_alpha=mean_alpha, mode=mode)

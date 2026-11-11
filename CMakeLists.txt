@@ -42,6 +42,7 @@ target_sources(
     src/glyph-filter.hpp
     src/modes.cpp
     src/modes.hpp
+    src/motion.hpp
     src/presets.cpp
     src/presets.hpp
     src/palette.cpp

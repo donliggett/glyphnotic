@@ -1,19 +1,19 @@
-// Glyphnotic pass: Score (cell resolution).
+// Glyphnotic pass: Score (cell resolution), with Hold and Boil.
 //
-// Each cell tries every glyph in the set and keeps the lowest cost; the
+// Each cell tries every glyph in the set and finds the lowest cost; the
 // lowest glyph index wins a tie. S and n count only the cell's counted
-// samples (see cells.effect). One technique per scoring (docs/SPEC.md,
-// Scoring):
+// samples (see cells.effect). One cost per scoring (docs/SPEC.md, Scoring),
+// chosen by score_mode:
 //
-//   Mosaic (Mosaic and Poster, free colors):
+//   0 Mosaic (Mosaic and Poster, free colors):
 //     cost(g) = -( |S_on|^2 / n_on + |S_off|^2 / n_off ) / 128
 //     with a term dropped when its count is 0.
 //
-//   Ink (lightness only; `samples` is the Lightness pass output, L' in r):
+//   1 Ink (lightness only; `samples` is the Lightness pass output, L' in r):
 //     cost(g) = (level(g) - m)^2 + shape * (n_on*ink^2 - 2*ink*S_on(L')) / 128
 //     level(g) = glyph_n_on(g) / max_n_on * ink, m = mean L' of the cell.
 //
-//   Console (palette colors; text from slots 0..15, background from 0..7):
+//   2 Console (palette colors; text from slots 0..15, background from 0..7):
 //     cost(g) = ( min_k [n_on|P_k|^2 - 2 S_on.P_k] + min_k<8 [n_off|P_k|^2 - 2 S_off.P_k] ) / 128
 //     computed relative to the cell's first counted sample (which changes
 //     every glyph's cost by the same amount). A side with no counted samples
@@ -22,208 +22,262 @@
 //     such glyph (they all draw the same picture) ties exactly and the lowest
 //     index wins.
 //
-// Output: held glyph, shown glyph, boil frames left, best cost. Indices are
-// stored as floats, which hold exact integers. Motion (Hold, Boil) comes in
-// Phase 3, so held and shown are the same and no boil is running.
+// Motion (docs/SPEC.md, Motion). Each cell keeps two glyphs: the held glyph,
+// the image-driven choice, and the shown glyph, which differs from it only
+// while a boil lasts.
+//
+//   Hold: the held glyph stays unless the best glyph's cost is lower than its
+//     own by more than hold_threshold (threshold 0: always the best).
+//   Boil: a cell that isn't swapping starts a swap with chance boil_chance
+//     this frame. It shows a glyph picked uniformly among the glyphs other
+//     than the held one whose cost is within boil_spread * (worst - best) of
+//     the best (the held glyph if there are none) for boil_linger frames,
+//     then shows the held glyph again. The boiled glyph never becomes held.
+//   A light jump (frame_state) or a fresh grid (history 0): the held glyph
+//     is the best, boils end, and none starts this frame.
+//
+// Randomness is a hash (PCG) of the cell, the instance's seed, the frame
+// counter and a salt, so it needs no texture and instances don't boil in step.
+//
+// Output: held glyph, shown glyph, boil frames left (including this one; 0 =
+// not swapping), best cost. Indices are stored as floats, which hold exact
+// integers.
 
 #include "cells.effect"
 
 uniform texture2d atlas; // one row per glyph, 128 texels, 1 = lit
 uniform int glyph_count;
+uniform int score_mode; // 0 Mosaic, 1 Ink, 2 Console
 uniform float ink_lightness;
 uniform float shape;
 uniform float max_n_on; // the most lit pixels of any glyph in the set
+
+uniform texture2d prev_scores; // the previous frame's output
+uniform texture2d frame_state; // Levels output; texel (1, 0).x = light jump
+uniform float history;         // 1: prev_scores is the previous frame of this grid
+uniform float hold_threshold;
+uniform float boil_chance;
+uniform float boil_spread;
+uniform int boil_linger;
+uniform int seed;
+uniform int frame_index;
 
 bool glyph_lit(int g, int lx, int ly)
 {
 	return atlas.Load(int3(ly * 8 + lx, g, 0)).r > 0.5;
 }
 
-float4 PSScoreMosaic(VertData v_in) : TARGET
+// What the cost of every glyph in a cell shares.
+struct CellSums {
+	int2 base;
+	bool any_opaque;
+	float3 shift; // Mosaic, Console: the first counted sample; Ink: (c, 0, 0)
+	float3 tot;   // Mosaic, Console: the counted samples' sum, relative to shift
+	float ntot;
+	float m; // Ink: mean L'
+	float k; // Ink: ink * (ink - 2c)
+};
+
+CellSums cell_sums(int2 base)
 {
-	int2 cell = texel_of(v_in.uv, cell_count);
-	int2 base = cell * int2(8, 16);
-	bool any_opaque = cell_has_opaque(base);
-	float3 shift = cell_shift(base, any_opaque);
-
-	float3 tot = float3(0.0, 0.0, 0.0);
-	float ntot = 0.0;
-	for (int ly = 0; ly < 16; ly++) {
-		for (int lx = 0; lx < 8; lx++) {
-			float4 s = load_sample(base, lx, ly);
-			float w = sample_weight(s.a, any_opaque);
-			tot += (s.rgb - shift) * w;
-			ntot += w;
-		}
-	}
-
-	float best_cost = 1.0e30;
-	float best_glyph = 0.0;
-	for (int g = 0; g < glyph_count; g++) {
-		float3 s_on = float3(0.0, 0.0, 0.0);
-		float n_on = 0.0;
+	CellSums c;
+	c.base = base;
+	c.any_opaque = cell_has_opaque(base);
+	c.shift = cell_shift(base, c.any_opaque);
+	c.tot = float3(0.0, 0.0, 0.0);
+	c.ntot = 0.0;
+	c.m = 0.0;
+	c.k = 0.0;
+	if (score_mode == 1) {
+		// S_on is summed relative to the first counted sample's L' (c), using
+		// n_on ink^2 - 2 ink S_on = n_on ink (ink - 2c) - 2 ink S_on(L' - c): a
+		// flat cell sums exact zeros, so glyphs with equal counts tie exactly.
+		float sum = 0.0;
 		for (int ly = 0; ly < 16; ly++) {
 			for (int lx = 0; lx < 8; lx++) {
-				if (glyph_lit(g, lx, ly)) {
-					float4 s = load_sample(base, lx, ly);
-					float w = sample_weight(s.a, any_opaque);
-					s_on += (s.rgb - shift) * w;
-					n_on += w;
-				}
+				float4 s = load_sample(base, lx, ly);
+				float w = sample_weight(s.a, c.any_opaque);
+				sum += s.r * w;
+				c.ntot += w;
 			}
 		}
-		float3 s_off = tot - s_on;
-		float n_off = ntot - n_on;
-		float fit = 0.0;
-		if (n_on > 0.0)
-			fit += dot(s_on, s_on) / n_on;
-		if (n_off > 0.0)
-			fit += dot(s_off, s_off) / n_off;
-		float cost = -fit / 128.0;
-		if (cost < best_cost) {
-			best_cost = cost;
-			best_glyph = float(g);
+		c.m = sum / max(c.ntot, 1.0);
+		c.k = ink_lightness * (ink_lightness - 2.0 * c.shift.r);
+	} else {
+		for (int ly = 0; ly < 16; ly++) {
+			for (int lx = 0; lx < 8; lx++) {
+				float4 s = load_sample(base, lx, ly);
+				float w = sample_weight(s.a, c.any_opaque);
+				c.tot += (s.rgb - c.shift) * w;
+				c.ntot += w;
+			}
 		}
 	}
-
-	return float4(best_glyph, best_glyph, 0.0, best_cost);
+	return c;
 }
 
-float4 PSScoreInk(VertData v_in) : TARGET
+float cost_mosaic(CellSums c, int g)
 {
-	int2 cell = texel_of(v_in.uv, cell_count);
-	int2 base = cell * int2(8, 16);
-	bool any_opaque = cell_has_opaque(base);
-	// S_on is summed relative to the first counted sample's L' (c), using
-	// n_on ink^2 - 2 ink S_on = n_on ink (ink - 2c) - 2 ink S_on(L' - c): a
-	// flat cell sums exact zeros, so glyphs with equal counts tie exactly.
-	float c = cell_shift(base, any_opaque).r;
-
-	float sum = 0.0;
-	float ntot = 0.0;
+	float3 s_on = float3(0.0, 0.0, 0.0);
+	float n_on = 0.0;
 	for (int ly = 0; ly < 16; ly++) {
 		for (int lx = 0; lx < 8; lx++) {
-			float4 s = load_sample(base, lx, ly);
-			float w = sample_weight(s.a, any_opaque);
-			sum += s.r * w;
-			ntot += w;
+			if (glyph_lit(g, lx, ly)) {
+				float4 s = load_sample(c.base, lx, ly);
+				float w = sample_weight(s.a, c.any_opaque);
+				s_on += (s.rgb - c.shift) * w;
+				n_on += w;
+			}
 		}
 	}
-	float m = sum / max(ntot, 1.0);
+	float3 s_off = c.tot - s_on;
+	float n_off = c.ntot - n_on;
+	float fit = 0.0;
+	if (n_on > 0.0)
+		fit += dot(s_on, s_on) / n_on;
+	if (n_off > 0.0)
+		fit += dot(s_off, s_off) / n_off;
+	return -fit / 128.0;
+}
+
+float cost_ink(CellSums c, int g)
+{
+	float n_glyph = 0.0;
+	float s_on = 0.0;
+	float n_on = 0.0;
+	for (int ly = 0; ly < 16; ly++) {
+		for (int lx = 0; lx < 8; lx++) {
+			if (glyph_lit(g, lx, ly)) {
+				float4 s = load_sample(c.base, lx, ly);
+				float w = sample_weight(s.a, c.any_opaque);
+				n_glyph += 1.0;
+				s_on += (s.r - c.shift.r) * w;
+				n_on += w;
+			}
+		}
+	}
 	float ink = ink_lightness;
-	float k = ink * (ink - 2.0 * c);
-
-	float best_cost = 1.0e30;
-	float best_glyph = 0.0;
-	for (int g = 0; g < glyph_count; g++) {
-		float n_glyph = 0.0;
-		float s_on = 0.0;
-		float n_on = 0.0;
-		for (int ly = 0; ly < 16; ly++) {
-			for (int lx = 0; lx < 8; lx++) {
-				if (glyph_lit(g, lx, ly)) {
-					float4 s = load_sample(base, lx, ly);
-					float w = sample_weight(s.a, any_opaque);
-					n_glyph += 1.0;
-					s_on += (s.r - c) * w;
-					n_on += w;
-				}
-			}
-		}
-		float d = n_glyph / max_n_on * ink - m;
-		float cost = d * d + shape * (n_on * k - 2.0 * ink * s_on) / 128.0;
-		if (cost < best_cost) {
-			best_cost = cost;
-			best_glyph = float(g);
-		}
-	}
-
-	return float4(best_glyph, best_glyph, 0.0, best_cost);
+	float d = n_glyph / max_n_on * ink - c.m;
+	return d * d + shape * (n_on * c.k - 2.0 * ink * s_on) / 128.0;
 }
 
-float4 PSScoreConsole(VertData v_in) : TARGET
+float cost_console(CellSums c, int g)
 {
-	int2 cell = texel_of(v_in.uv, cell_count);
-	int2 base = cell * int2(8, 16);
-	bool any_opaque = cell_has_opaque(base);
-	float3 shift = cell_shift(base, any_opaque);
-
-	float3 tot = float3(0.0, 0.0, 0.0);
-	float ntot = 0.0;
+	float3 s_on = float3(0.0, 0.0, 0.0);
+	float n_on = 0.0;
 	for (int ly = 0; ly < 16; ly++) {
 		for (int lx = 0; lx < 8; lx++) {
-			float4 s = load_sample(base, lx, ly);
-			float w = sample_weight(s.a, any_opaque);
-			tot += (s.rgb - shift) * w;
-			ntot += w;
-		}
-	}
-
-	float best_cost = 1.0e30;
-	float best_glyph = 0.0;
-	for (int g = 0; g < glyph_count; g++) {
-		float3 s_on = float3(0.0, 0.0, 0.0);
-		float n_on = 0.0;
-		for (int ly = 0; ly < 16; ly++) {
-			for (int lx = 0; lx < 8; lx++) {
-				if (glyph_lit(g, lx, ly)) {
-					float4 s = load_sample(base, lx, ly);
-					float w = sample_weight(s.a, any_opaque);
-					s_on += (s.rgb - shift) * w;
-					n_on += w;
-				}
+			if (glyph_lit(g, lx, ly)) {
+				float4 s = load_sample(c.base, lx, ly);
+				float w = sample_weight(s.a, c.any_opaque);
+				s_on += (s.rgb - c.shift) * w;
+				n_on += w;
 			}
 		}
-		float3 s_off = tot - s_on;
-		float n_off = ntot - n_on;
-		int kt = best_slot(s_on, n_on, shift, 16);
-		int kb = best_slot(s_off, n_off, shift, 8);
-		if (n_on <= 0.0)
-			kt = kb;
-		if (n_off <= 0.0)
-			kb = kt;
-		float3 pt = palette_color(kt) - shift;
-		float3 pb = palette_color(kb) - shift;
-		// One slot for the whole cell: the cost doesn't depend on the glyph,
-		// so compute it from the cell's totals and every such glyph ties exactly.
-		float cost;
-		if (kt == kb)
-			cost = (ntot * dot(pb, pb) - 2.0 * dot(tot, pb)) / 128.0;
-		else
-			cost = (n_on * dot(pt, pt) + n_off * dot(pb, pb) - 2.0 * (dot(s_on, pt) + dot(s_off, pb))) /
-			       128.0;
+	}
+	float3 s_off = c.tot - s_on;
+	float n_off = c.ntot - n_on;
+	int kt = best_slot(s_on, n_on, c.shift, 16);
+	int kb = best_slot(s_off, n_off, c.shift, 8);
+	if (n_on <= 0.0)
+		kt = kb;
+	if (n_off <= 0.0)
+		kb = kt;
+	float3 pt = palette_color(kt) - c.shift;
+	float3 pb = palette_color(kb) - c.shift;
+	// One slot for the whole cell: the cost doesn't depend on the glyph, so
+	// compute it from the cell's totals and every such glyph ties exactly.
+	if (kt == kb)
+		return (c.ntot * dot(pb, pb) - 2.0 * dot(c.tot, pb)) / 128.0;
+	return (n_on * dot(pt, pt) + n_off * dot(pb, pb) - 2.0 * (dot(s_on, pt) + dot(s_off, pb))) / 128.0;
+}
+
+float glyph_cost(CellSums c, int g)
+{
+	if (score_mode == 1)
+		return cost_ink(c, g);
+	if (score_mode == 2)
+		return cost_console(c, g);
+	return cost_mosaic(c, g);
+}
+
+// PCG hash (O'Neill; the RXS-M-XS output of a 32-bit LCG step).
+uint pcg_hash(uint v)
+{
+	uint state = v * 747796405u + 2891336453u;
+	uint word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
+	return (word >> 22u) ^ word;
+}
+
+// A uniform number in [0, 1) from a hash.
+float hash_unit(uint h)
+{
+	return float(h >> 8u) * (1.0 / 16777216.0);
+}
+
+float4 PSScore(VertData v_in) : TARGET
+{
+	int2 cell = texel_of(v_in.uv, cell_count);
+	CellSums c = cell_sums(cell * int2(8, 16));
+
+	float4 prev = prev_scores.Load(int3(cell, 0));
+	bool jump = frame_state.Load(int3(1, 0, 0)).x > 0.5;
+	bool fresh = history < 0.5 || jump;
+	int held_prev = int(prev.x + 0.5);
+	if (fresh || held_prev >= glyph_count)
+		held_prev = -1;
+
+	float best_cost = 1.0e30;
+	float worst_cost = -1.0e30;
+	float held_cost = 1.0e30;
+	int best = 0;
+	for (int g = 0; g < glyph_count; g++) {
+		float cost = glyph_cost(c, g);
 		if (cost < best_cost) {
 			best_cost = cost;
-			best_glyph = float(g);
+			best = g;
+		}
+		worst_cost = max(worst_cost, cost);
+		if (g == held_prev)
+			held_cost = cost;
+	}
+
+	// Hold
+	int held = best;
+	if (held_prev >= 0 && hold_threshold > 0.0 && held_cost - best_cost <= hold_threshold)
+		held = held_prev;
+
+	// Boil
+	int shown = held;
+	float left = 0.0;
+	if (!fresh && prev.z > 1.5) {
+		shown = int(prev.y + 0.5); // a swap still lasting
+		left = prev.z - 1.0;
+	} else if (!fresh && boil_chance > 0.0) {
+		uint h = pcg_hash(uint(cell.x) + pcg_hash(uint(cell.y) + pcg_hash(uint(seed) + pcg_hash(uint(frame_index)))));
+		if (hash_unit(pcg_hash(h)) < boil_chance) {
+			// Reservoir sampling: the n-th candidate replaces the pick with chance 1/n.
+			float limit = best_cost + boil_spread * (worst_cost - best_cost);
+			float n = 0.0;
+			for (int g = 0; g < glyph_count; g++) {
+				if (g != held && glyph_cost(c, g) <= limit) {
+					n += 1.0;
+					if (hash_unit(pcg_hash(h + uint(g) + 1u)) * n < 1.0)
+						shown = g;
+				}
+			}
+			left = float(boil_linger);
 		}
 	}
 
-	return float4(best_glyph, best_glyph, 0.0, best_cost);
+	return float4(float(held), float(shown), left, best_cost);
 }
 
-technique Mosaic
+technique Draw
 {
 	pass
 	{
 		vertex_shader = VSDefault(v_in);
-		pixel_shader = PSScoreMosaic(v_in);
-	}
-}
-
-technique Ink
-{
-	pass
-	{
-		vertex_shader = VSDefault(v_in);
-		pixel_shader = PSScoreInk(v_in);
-	}
-}
-
-technique Console
-{
-	pass
-	{
-		vertex_shader = VSDefault(v_in);
-		pixel_shader = PSScoreConsole(v_in);
+		pixel_shader = PSScore(v_in);
 	}
 }
