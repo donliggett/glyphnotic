@@ -66,6 +66,7 @@ tests/unit/            standalone C++ unit tests (no OBS needed)
 tests/stills/          openly licensed test stills (with ATTRIBUTION.md)
 docs/
   SPEC.md, BUILDING.md, INSTALL.md, LOOKS.md, PERFORMANCE.md
+  BUILDER-NOTES.md     how the builder works: shell, commands, test suites, OBS and Linux checks, standing rules
   build-history/       one report per build phase
   licenses/            license texts of bundled third-party material
 ```
@@ -275,7 +276,7 @@ A debug build of the plugin (CMake option `GLYPHNOTIC_DEBUG_TOOLS`) adds a **Dum
 
 ## Build phases and acceptance
 
-Each phase ends with a report in `docs/build-history/phase-N.md` covering what was built, how it was tested, measurements, and deviations from this spec with reasons. Then the spec is updated and the phase's boxes are ticked. From Phase 3 on, every phase also ends with the Linux check (`tools/linux-check/`, steps in `tools/README.md`): OBS 33 under `xvfb-run` in an Ubuntu 26.04 container, with each Glyphnotic filter on an image source, must log no errors and 0 memory leaks. After a phase is approved it is committed and pushed, and CI must be green before the next phase starts.
+A builder starting a phase first reads `docs/BUILDER-NOTES.md`, the previous phase's report and this spec's sections for the phase. Each phase ends with a report in `docs/build-history/phase-N.md` covering what was built, how it was tested, measurements, and deviations from this spec with reasons. Then the spec is updated and the phase's boxes are ticked. From Phase 3 on, every phase also ends with the Linux check (`tools/linux-check/`, steps in `tools/README.md`): OBS 33 under `xvfb-run` in an Ubuntu 26.04 container, with each Glyphnotic filter on an image source, must log no errors and 0 memory leaks. Before stopping at the review gate the builder also updates `docs/BUILDER-NOTES.md`. After a phase is approved it is committed and pushed, and CI must be green before the next phase starts.
 
 **Phase 0: scaffold**
 - [x] Repository created from `obsproject/obs-plugintemplate`; CI builds Windows, Linux and macOS packages (Windows and Linux green on every push to `main`; macOS builds only on tags and manual runs, by decision at the Phase 0 review)
