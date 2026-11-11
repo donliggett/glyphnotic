@@ -36,6 +36,11 @@ if (( ! (${skips[(Ie)all]} + ${skips[(Ie)deps]}) )) {
   }
 
   sudo add-apt-repository --yes ppa:obsproject/obs-studio
+  # Glyphnotic: prefer OBS's PPA over the Ubuntu archive. On amd64v3 systems (GitHub's
+  # ubuntu-26.04 runner) apt otherwise picks Ubuntu's obs-studio 32.x build, which is
+  # older than OBS 33 and ships no libobs CMake package.
+  print -r -- $'Package: *\nPin: release o=LP-PPA-obsproject-obs-studio\nPin-Priority: 1001' \
+    | sudo tee /etc/apt/preferences.d/obsproject-obs-studio > /dev/null
   sudo apt update
 
   sudo apt-get install ${apt_args} \
@@ -43,6 +48,13 @@ if (( ! (${skips[(Ie)all]} + ${skips[(Ie)deps]}) )) {
     libgles2-mesa-dev \
     libsimde-dev \
     obs-studio
+
+  local obs_version="$(dpkg-query -W -f='${Version}' obs-studio)"
+  log_info "obs-studio ${obs_version} installed"
+  if ! dpkg --compare-versions "${obs_version}" ge 33.0.0; then
+    log_error "Glyphnotic needs OBS Studio 33.0.0 or later to build; found ${obs_version}."
+    return 2
+  fi
 
   local -a _qt_packages=()
 

@@ -62,6 +62,13 @@ sudo add-apt-repository ppa:obsproject/obs-studio
 sudo apt install obs-studio build-essential cmake ninja-build pkg-config libsimde-dev libgles2-mesa-dev zsh jq
 ```
 
+Check that `apt policy obs-studio` shows 33.0.0 or later from the PPA. Ubuntu
+26.04's own archive has obs-studio 32.x, and on amd64v3 systems apt can pick
+it over the PPA's build. The CI script `.github/scripts/utils.zsh/setup_ubuntu`
+avoids this by pinning the PPA (`/etc/apt/preferences.d/obsproject-obs-studio`,
+`Pin: release o=LP-PPA-obsproject-obs-studio`, priority 1001), and it stops
+if the installed OBS is older than 33.0.0.
+
 Then, from the repository root, either run the template's scripts (as CI does):
 
 ```bash
