@@ -12,7 +12,8 @@ Date: 2026-11-11. Plugin version 0.1.0. Built against OBS Studio 33.0.1.
 | Boil 0: consecutive frames identical. Boil > 0: swap rate within ±20%. A swapped cell returns after its linger, even at Hold 100 | **Done.** Boil 0: every look (Static and Fever with Boil 0) gives 20 identical recorded frames (glyphs and colors, bit for bit) and two identical output frames. Boil > 0: 10 cases at 30 and 60 fps, Boil 10–100, linger 1–12, Hold 10–100, rates within 1.4% of the setting; every one of ~800,000 swaps lasts exactly its linger and then shows the held glyph (or starts a new swap); held glyphs never change on a still, including at Hold 100. |
 
 Direct3D 11 and OpenGL (OBS's OpenGL renderer on Windows) gave the same
-results. The Linux check is **not done**: see "Linux check" below.
+results. The Linux check passed (run once Launchpad came back; see
+"Linux check" below).
 
 ## What was built
 
@@ -261,22 +262,43 @@ Static, sintel with Ink Fever, spring with Mosaic (Lines, Boil 40, spread
 
 ### Linux check
 
-**Not done.** The check's first step installs OBS 33 from OBS's PPA on
-Launchpad, and from about 09:00 on 2026-11-11 this machine couldn't reach
-Launchpad: `add-apt-repository` failed with an SSL error, and `curl` from
-Windows failed the TLS handshake with both `api.launchpad.net` and
-`ppa.launchpadcontent.net`, while GitHub and Ubuntu's archive answered.
-Ubuntu 26.04's own archive has OBS 32.1.0, below the 33.0 minimum, so it
-can't stand in. The script now includes Ink's Static and Fever looks (the
-boil hashing and Settle under Mesa's GLSL compiler, which is stricter than
-NVIDIA's). It needs running once Launchpad is reachable:
+**Passed**, after a delay. The check's first step installs OBS 33 from
+OBS's PPA on Launchpad, and from about 09:00 on 2026-11-11 Launchpad was
+unreachable (TLS handshake failures from both Docker and Windows; Ubuntu
+26.04's own archive has only OBS 32.1.0). The commit's first CI runs failed
+on the Ubuntu job for the same outage; a later rerun of the same commit
+(65100c1) passed every job. Once Launchpad answered again,
+`tools/linux-check/obs-xvfb-check.sh` ran in a fresh `ubuntu:26.04`
+container: OBS 33.0.0 from the PPA, the plugin built with GCC as CI builds
+it (warnings as errors), all four unit test programs passing (motion-test
+included), then OBS under `xvfb-run` on a test collection with six image
+sources: Ink, Mosaic, Poster and Console on their first looks, plus Ink's
+Static and Fever looks, so the boil hashing and Settle ran under Mesa's GLSL
+compiler. From the check's result:
 
-```bash
-MSYS_NO_PATHCONV=1 docker run --rm -v "$PWD:/src:ro" -v "$PWD/build_linux_check:/out" ubuntu:26.04 bash /src/tools/linux-check/obs-xvfb-check.sh
+```
+OBS 33.0.0 (linux), plugin from /usr
+Loading up OpenGL on adapter Mesa llvmpipe (LLVM 21.1.8, 256 bits)
+pass: plugin loaded (1)
+pass: filter glyphnotic_ink created (3)
+pass: filter glyphnotic_mosaic created (1)
+pass: filter glyphnotic_poster created (1)
+pass: filter glyphnotic_console created (1)
+pass: no Glyphnotic errors or warnings (0)
+pass: no effect load errors (0)
+pass: no failed draws (0)
+pass: clean shutdown (1)
+pass: no leaks (1)
 ```
 
-OBS's OpenGL renderer on Windows ran every suite above, so the effects'
-GLSL translation compiles and matches Direct3D on NVIDIA's driver.
+All six sources draw (X screen below: top row Ink, Mosaic, Console; bottom
+row Poster, Ink Static, Ink Fever). llvmpipe renders on the CPU, so OBS ran
+at about 3 fps with six filters and Soften (Phase 2: about 7 fps with four).
+The only other errors in OBS's log are the container's: no D-Bus, and the
+AJA, DeckLink and NVENC modules finding no hardware. As before, the reference comparison itself hasn't run on
+Linux; OBS's OpenGL renderer on Windows ran every suite above.
+
+![OBS on Linux under Xvfb](phase-3-linux-obs.png)
 
 ## Findings
 
