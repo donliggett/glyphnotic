@@ -62,12 +62,14 @@ sudo add-apt-repository ppa:obsproject/obs-studio
 sudo apt install obs-studio build-essential cmake ninja-build pkg-config libsimde-dev libgles2-mesa-dev zsh jq
 ```
 
-Check that `apt policy obs-studio` shows 33.0.0 or later from the PPA. Ubuntu
-26.04's own archive has obs-studio 32.x, and on amd64v3 systems apt can pick
-it over the PPA's build. The CI script `.github/scripts/utils.zsh/setup_ubuntu`
-avoids this by pinning the PPA (`/etc/apt/preferences.d/obsproject-obs-studio`,
-`Pin: release o=LP-PPA-obsproject-obs-studio`, priority 1001), and it stops
-if the installed OBS is older than 33.0.0.
+Check that `apt policy obs-studio` shows 33.0.0 or later from the PPA.
+Ubuntu 26.04's own archive has obs-studio 32.x. On systems using Ubuntu's
+amd64v3 package variant (GitHub's ubuntu-26.04 runner is one), apt reads only
+the PPA's amd64v3 index, which is empty, and installs 32.x. The fix is to add
+`Architectures: amd64` under `Types: deb` in
+`/etc/apt/sources.list.d/*obsproject*obs-studio*.sources`, then
+`sudo apt update`. The CI script `.github/scripts/utils.zsh/setup_ubuntu`
+does this, and stops if the installed OBS is older than 33.0.0.
 
 Then, from the repository root, either run the template's scripts (as CI does):
 
