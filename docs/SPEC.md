@@ -262,7 +262,7 @@ A debug build of the plugin adds a hidden **Dump grid** button that writes the s
 Each phase ends with a report in `docs/build-history/phase-N.md` covering what was built, how it was tested, measurements, and deviations from this spec with reasons. Then the spec is updated and the phase's boxes are ticked.
 
 **Phase 0: scaffold**
-- [ ] Repository created from `obsproject/obs-plugintemplate`; CI builds Windows, Linux and macOS packages (created and retargeted to OBS 33; CI first runs when the repository is pushed)
+- [x] Repository created from `obsproject/obs-plugintemplate`; CI builds Windows, Linux and macOS packages (Windows and Linux green on every push to `main`; macOS builds only on tags and manual runs, by decision at the Phase 0 review)
 - [x] A pass-through "Glyphnotic Ink" filter loads in OBS 33 from the new plugin location, with no "Legacy" badge in the Plugin Manager
 - [x] PSF1 parser and character sets, with unit tests confirming the unique counts 5 / 25 / 95 / 503
 - [x] Install paths confirmed and written into Install and `docs/INSTALL.md`

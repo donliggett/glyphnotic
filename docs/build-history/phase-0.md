@@ -6,7 +6,7 @@ Date: 2026-11-11. Plugin version 0.1.0. Built against OBS Studio 33.0.1.
 
 | Item | Result |
 | --- | --- |
-| Repository created from `obsproject/obs-plugintemplate`; CI builds Windows, Linux and macOS packages | Pending: first CI run after push. |
+| Repository created from `obsproject/obs-plugintemplate`; CI builds Windows, Linux and macOS packages | **Done** for Windows and Linux. Created from the template at commit `3e7d7ac3` (2025-12-09) and moved to OBS 33. CI on `main` ([run 42989070374](https://github.com/donliggett/glyphnotic/actions/runs/42989070374), commit `46ae933`) passed: format checks, Windows (zip) and Ubuntu 26.04 (.deb, tarball, .ddeb, source), unit tests on both. macOS builds only on tags and manual runs (agreed at review) and hasn't run yet. |
 | Pass-through "Glyphnotic Ink" loads in OBS 33 from the new plugin location, with no "Legacy" badge | **Done.** Windows: OBS 33.0.1, Plugin Manager checked. Linux: OBS 33.0.0 under Xvfb, from both the .deb and the per-user tarball. |
 | PSF1 parser and character sets, with unit tests confirming 5 / 25 / 95 / 503 | **Done.** 41 checks pass with MSVC 14.51, MinGW GCC 13.2, and GCC 15.2 on Ubuntu 26.04. |
 | Install paths confirmed and written into Install and `docs/INSTALL.md` | **Done.** From OBS 33.0.1's source and OBS's documentation; tested on Windows and Linux. |
@@ -190,6 +190,20 @@ Not built. The macOS CI job is the template's, with the runner, Xcode and
 deployment target updated. It runs only for tags and manual runs, so it will
 first run with the first tag or a manual dispatch.
 
+### CI
+
+The first two pushes failed on Ubuntu only. GitHub's `ubuntu-26.04` runner
+uses Ubuntu's amd64v3 package variant. In that mode apt reads only the
+PPA's amd64v3 index, which is empty, so it installed Ubuntu's own
+obs-studio 32.1.0, which has no libobs CMake package, and configure failed.
+An apt pin didn't help, since the PPA's package wasn't visible at all. The
+fix, reproduced and checked first in an `ubuntu:26.04` container with
+`APT::Architecture-Variants "amd64v3"`, adds `Architectures: amd64` to the
+PPA's deb822 source in `.github/scripts/utils.zsh/setup_ubuntu`. The script
+also stops if the installed OBS is older than 33.0.0. The third run
+([42989070374](https://github.com/donliggett/glyphnotic/actions/runs/42989070374))
+installed obs-studio 33.0.0 from the PPA and passed.
+
 ### Docker
 
 The Linux checks ran in Docker Desktop (WSL 2 backend), whose data lives in
@@ -205,6 +219,8 @@ removed; Docker Desktop reclaims the space over time or on demand
 
 - **macOS in CI only for tags and manual runs**, so the first box was ticked
   on Windows and Linux CI alone (as agreed at review).
+- **CI setup script changed beyond the template** to make apt see OBS's PPA
+  on amd64v3 runners (see CI above).
 - **The font ships uncompressed** (`Uni2-Fixed16.psf`, 10,804 bytes) rather
   than as the spec's `.psf.gz`, so no gzip code is needed. The spec's Font
   section now names the `.psf`.
