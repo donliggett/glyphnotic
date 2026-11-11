@@ -42,8 +42,9 @@ bool obs_module_load(void)
 		build_charset(g_font, CharsetId::Lines).size(), build_charset(g_font, CharsetId::Ascii).size(),
 		build_charset(g_font, CharsetId::EveryGlyph).size());
 
-	// Phase 0 registers only Ink, as a pass-through. Mosaic, Poster and Console follow in Phases 1-2.
+	// Ink still passes the picture through until Phase 2; Poster and Console follow in Phase 2.
 	register_glyph_filter(Mode::Ink, &g_font);
+	register_glyph_filter(Mode::Mosaic, &g_font);
 
 	obs_log(LOG_INFO, "plugin loaded successfully (version %s)", PLUGIN_VERSION);
 	return true;

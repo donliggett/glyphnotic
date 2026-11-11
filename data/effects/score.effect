@@ -1,0 +1,77 @@
+// Glyphnotic pass: Score (cell resolution).
+//
+// Each cell tries every glyph in the set and keeps the lowest cost; the
+// lowest glyph index wins a tie. Mosaic and Poster (free colors):
+//
+//   cost(g) = -( |S_on|^2 / n_on + |S_off|^2 / n_off ) / 128
+//
+// with a term dropped when its count is 0. S and n count only the cell's
+// counted samples (see cells.effect).
+//
+// Output: held glyph, shown glyph, boil frames left, best cost. Indices are
+// stored as floats, which hold exact integers. Motion (Hold, Boil) comes in
+// Phase 3, so held and shown are the same and no boil is running.
+
+#include "cells.effect"
+
+uniform texture2d atlas; // one row per glyph, 128 texels, 1 = lit
+uniform int glyph_count;
+
+float4 PSScore(VertData v_in) : TARGET
+{
+	int2 cell = texel_of(v_in.uv, cell_count);
+	int2 base = cell * int2(8, 16);
+	bool any_opaque = cell_has_opaque(base);
+	float3 shift = cell_shift(base, any_opaque);
+
+	float3 tot = float3(0.0, 0.0, 0.0);
+	float ntot = 0.0;
+	for (int ly = 0; ly < 16; ly++) {
+		for (int lx = 0; lx < 8; lx++) {
+			float4 s = load_sample(base, lx, ly);
+			float w = sample_weight(s.a, any_opaque);
+			tot += (s.rgb - shift) * w;
+			ntot += w;
+		}
+	}
+
+	float best_cost = 1.0e30;
+	float best_glyph = 0.0;
+	for (int g = 0; g < glyph_count; g++) {
+		float3 s_on = float3(0.0, 0.0, 0.0);
+		float n_on = 0.0;
+		for (int ly = 0; ly < 16; ly++) {
+			for (int lx = 0; lx < 8; lx++) {
+				if (atlas.Load(int3(ly * 8 + lx, g, 0)).r > 0.5) {
+					float4 s = load_sample(base, lx, ly);
+					float w = sample_weight(s.a, any_opaque);
+					s_on += (s.rgb - shift) * w;
+					n_on += w;
+				}
+			}
+		}
+		float3 s_off = tot - s_on;
+		float n_off = ntot - n_on;
+		float fit = 0.0;
+		if (n_on > 0.0)
+			fit += dot(s_on, s_on) / n_on;
+		if (n_off > 0.0)
+			fit += dot(s_off, s_off) / n_off;
+		float cost = -fit / 128.0;
+		if (cost < best_cost) {
+			best_cost = cost;
+			best_glyph = float(g);
+		}
+	}
+
+	return float4(best_glyph, best_glyph, 0.0, best_cost);
+}
+
+technique Draw
+{
+	pass
+	{
+		vertex_shader = VSDefault(v_in);
+		pixel_shader = PSScore(v_in);
+	}
+}

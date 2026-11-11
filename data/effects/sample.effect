@@ -1,0 +1,59 @@
+// Glyphnotic pass: Sample.
+//
+// Source -> OKLab plus alpha at sample resolution (cellsX*8 by cellsY*16).
+// At cell scale s each sample is the alpha-weighted mean of an s*s block of
+// source pixels, in linear RGB, then converted to OKLab.
+//
+// The filter isn't OBS_SOURCE_SRGB, so OBS binds its 8-bit input as `image`
+// without the sRGB view: Load returns the stored sRGB-encoded values, and
+// this shader decodes them, exactly once, with the sRGB formula. (The GPU's
+// own sRGB decode was measured up to 0.43 of an 8-bit step off; see
+// docs/build-history/phase-1.md.)
+//
+// The input is premultiplied by alpha in encoded space, as OBS renders its
+// sources, so color is divided by alpha before decoding.
+
+#include "common.effect"
+
+uniform texture2d image;
+uniform float2 sample_size; // target size in samples
+uniform float2 grid_offset; // source pixel of the grid's top-left corner
+uniform int cell_scale;     // s, 1..4
+
+float3 straight_linear(float4 px)
+{
+	float3 enc = px.rgb;
+	if (px.a > 0.0 && px.a < 1.0)
+		enc = saturate(enc / px.a);
+	return srgb_decode(enc);
+}
+
+float4 PSSample(VertData v_in) : TARGET
+{
+	int2 sp = texel_of(v_in.uv, sample_size);
+	int2 origin = int2(grid_offset) + sp * cell_scale;
+
+	float3 sum = float3(0.0, 0.0, 0.0);
+	float asum = 0.0;
+	for (int j = 0; j < cell_scale; j++) {
+		for (int i = 0; i < cell_scale; i++) {
+			float4 px = image.Load(int3(origin.x + i, origin.y + j, 0));
+			sum += straight_linear(px) * px.a;
+			asum += px.a;
+		}
+	}
+
+	if (asum <= 0.0)
+		return float4(0.0, 0.0, 0.0, 0.0);
+	float3 lin = sum / asum;
+	return float4(linear_to_oklab(lin), asum / float(cell_scale * cell_scale));
+}
+
+technique Draw
+{
+	pass
+	{
+		vertex_shader = VSDefault(v_in);
+		pixel_shader = PSSample(v_in);
+	}
+}

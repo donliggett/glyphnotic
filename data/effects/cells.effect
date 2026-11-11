@@ -1,0 +1,57 @@
+// Glyphnotic: shared code for the cell-resolution passes (Cell stats, Score,
+// Color). Included, not loaded on its own.
+//
+// `samples` is the Sample pass output: OKLab in rgb, alpha in a, with cell
+// (cx, cy) covering samples (cx*8 .. cx*8+7, cy*16 .. cy*16+15). Sample
+// index i = ly*8 + lx matches the atlas layout (one row per glyph, 128 texels).
+//
+// Color statistics use only samples with alpha >= 0.5 when the cell has any;
+// otherwise every sample counts.
+//
+// Sums are taken relative to the cell's first counted sample (`shift`). This
+// changes every glyph's cost by the same amount, so the winner is the same,
+// but a flat cell then sums exact zeros: all glyphs tie exactly and the
+// lowest index (space) wins on every GPU and in the reference.
+
+#include "common.effect"
+
+uniform texture2d samples;
+uniform float2 cell_count; // cellsX, cellsY
+
+float4 load_sample(int2 base, int lx, int ly)
+{
+	return samples.Load(int3(base.x + lx, base.y + ly, 0));
+}
+
+bool cell_has_opaque(int2 base)
+{
+	bool found = false;
+	for (int ly = 0; ly < 16; ly++) {
+		for (int lx = 0; lx < 8; lx++) {
+			if (load_sample(base, lx, ly).a >= 0.5)
+				found = true;
+		}
+	}
+	return found;
+}
+
+float sample_weight(float alpha, bool any_opaque)
+{
+	return (!any_opaque || alpha >= 0.5) ? 1.0 : 0.0;
+}
+
+float3 cell_shift(int2 base, bool any_opaque)
+{
+	float3 shift = float3(0.0, 0.0, 0.0);
+	bool found = false;
+	for (int ly = 0; ly < 16; ly++) {
+		for (int lx = 0; lx < 8; lx++) {
+			float4 s = load_sample(base, lx, ly);
+			if (!found && sample_weight(s.a, any_opaque) > 0.0) {
+				shift = s.rgb;
+				found = true;
+			}
+		}
+	}
+	return shift;
+}

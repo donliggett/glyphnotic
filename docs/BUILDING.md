@@ -140,6 +140,14 @@ ctest --test-dir build_tests -C Release --output-on-failure
 
 CI runs these on every platform it builds.
 
+## Debug build and reference comparison
+
+A build configured with `-DGLYPHNOTIC_DEBUG_TOOLS=ON` adds the filter's
+**Dump grid** button and builds `glyphnotic-harness`, which runs the filter on
+a still in a headless libobs. `tools/reference/run_stills.py` then compares
+every test still with the Python reference implementation. Never ship a
+debug build. [tools/README.md](../tools/README.md) has the commands.
+
 ## Formatting
 
 CI checks C/C++ with clang-format 19 and CMake files with gersemi, using

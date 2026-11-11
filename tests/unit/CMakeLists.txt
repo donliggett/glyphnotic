@@ -28,5 +28,10 @@ target_include_directories(font-test PRIVATE "${GLYPHNOTIC_ROOT}/src")
 target_compile_options(font-test PRIVATE ${warning_flags})
 target_compile_definitions(font-test PRIVATE GLYPHNOTIC_FONT_PATH="${GLYPHNOTIC_ROOT}/data/fonts/Uni2-Fixed16.psf")
 
+add_executable(grid-test grid-test.cpp)
+target_include_directories(grid-test PRIVATE "${GLYPHNOTIC_ROOT}/src")
+target_compile_options(grid-test PRIVATE ${warning_flags})
+
 enable_testing()
 add_test(NAME font-test COMMAND font-test)
+add_test(NAME grid-test COMMAND grid-test)

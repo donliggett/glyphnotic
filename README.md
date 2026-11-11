@@ -4,8 +4,9 @@ An OBS Studio plugin that redraws any video source as a live grid of
 characters. It adds four video filters, one per drawing mode: Ink, Mosaic,
 Poster and Console.
 
-**Status:** in development. Phase 0 (scaffold) is done: the plugin loads in
-OBS 33 with a pass-through "Glyphnotic Ink" filter. See
+**Status:** in development. Phase 1 is done: the "Glyphnotic Mosaic" filter
+draws the character grid ("Glyphnotic Ink" still passes the picture through
+until Phase 2). See
 [docs/SPEC.md](docs/SPEC.md) for the full design and build phases, and
 [docs/build-history/](docs/build-history/) for a report on each phase.
 
@@ -20,6 +21,8 @@ OBS 33 with a pass-through "Glyphnotic Ink" filter. See
   (GPL-2.0; see [docs/licenses/](docs/licenses/)).
 - Font: Uni2 Fixed 8×16 by Anton Zinoviev, from Debian's console-setup
   (public domain; see [data/fonts/README.md](data/fonts/README.md)).
+- Test stills (not shipped) from the Blender Foundation's open movies, CC BY;
+  see [tests/stills/ATTRIBUTION.md](tests/stills/ATTRIBUTION.md).
 
 ## License
 

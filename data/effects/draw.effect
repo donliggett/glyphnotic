@@ -1,0 +1,54 @@
+// Glyphnotic pass: Draw (source resolution), into OBS's render target.
+//
+// Each pixel finds its cell, reads the shown glyph's bit from the atlas, and
+// outputs the text or background color, or transparency. Glyphs are drawn
+// nearest-neighbor at the cell scale. Pixels outside the grid get the edge
+// fill: opaque black or transparent.
+//
+// Colors are OKLab, converted to linear sRGB, clipped to [0, 1] and
+// sRGB-encoded with the formula (the filter isn't OBS_SOURCE_SRGB, so OBS
+// expects encoded values). output_linear is set only if OBS's linear sRGB
+// state is on; the framebuffer then encodes. Alpha is always 0 or 1.
+
+#include "common.effect"
+
+uniform texture2d atlas;
+uniform texture2d scores;
+uniform texture2d colors;
+uniform float2 source_size;
+uniform float2 grid_offset;
+uniform float2 grid_size; // in source pixels
+uniform int cell_scale;
+uniform float edges_transparent;
+uniform float output_linear;
+
+float4 PSDraw(VertData v_in) : TARGET
+{
+	int2 p = texel_of(v_in.uv, source_size);
+	int2 q = p - int2(grid_offset);
+	int2 gsize = int2(grid_size);
+	if (q.x < 0 || q.y < 0 || q.x >= gsize.x || q.y >= gsize.y)
+		return (edges_transparent > 0.5) ? float4(0.0, 0.0, 0.0, 0.0) : float4(0.0, 0.0, 0.0, 1.0);
+
+	int2 cell_px = int2(8, 16) * cell_scale;
+	int2 cell = q / cell_px;
+	int2 local = (q - cell * cell_px) / cell_scale;
+
+	int g = int(scores.Load(int3(cell, 0)).y + 0.5);
+	bool lit = atlas.Load(int3(local.y * 8 + local.x, g, 0)).r > 0.5;
+	float4 c = colors.Load(int3(cell.x * 2 + (lit ? 0 : 1), cell.y, 0));
+	if (c.a < 0.5)
+		return float4(0.0, 0.0, 0.0, 0.0);
+
+	float3 lin = saturate(oklab_to_linear(c.rgb));
+	return float4((output_linear > 0.5) ? lin : srgb_encode(lin), 1.0);
+}
+
+technique Draw
+{
+	pass
+	{
+		vertex_shader = VSDefault(v_in);
+		pixel_shader = PSDraw(v_in);
+	}
+}

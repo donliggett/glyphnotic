@@ -47,15 +47,18 @@ src/
   glyph-filter.cpp     shared filter: create/destroy/update/properties/render
   modes.cpp            per-mode settings, presets and effect selection
   font.cpp             PSF1 parser, character sets, glyph atlas (no libobs dependency)
+  grid.hpp             grid geometry (no libobs dependency)
   palette.cpp          built-in palettes, palette capture (k-means)
   presets.cpp          the looks
   plugin-support.*     from the plugin template (logging helper)
 data/
-  effects/*.effect     all GPU passes
+  effects/*.effect     all GPU passes: sample, stats, score, cell-color, draw; common and cells are shared includes
   fonts/Uni2-Fixed16.psf, fonts/README.md
   locale/en-US.ini
   manifest.json        generated at build time from buildspec.json: OBS 33 Plugin Manager metadata (display name, ID, version, links)
-tools/reference/       Python + NumPy reference implementation and compare script
+tools/README.md        how to build and run the test tools
+tools/harness/         headless libobs runner for a filter on a still (debug builds only)
+tools/reference/       Python + NumPy reference implementation, compare and run scripts
 tests/unit/            standalone C++ unit tests (no OBS needed)
 tests/stills/          openly licensed test stills (with ATTRIBUTION.md)
 docs/
@@ -76,26 +79,31 @@ docs/
 | Lines | Blocks plus `─│═║┼├┤┬┴┌┐└┘╭╮╰╯╱╲╳/\_‗¯·.•●` | 25 |
 | ASCII | Space and the 94 printable characters U+0021–U+007E | 95 |
 | Every glyph | Space, then every mapped code point above U+0020 in code-point order, excluding U+007F–U+009F | 503 |
-| Custom | Space, then the characters typed in the Custom characters field, in order | Varies, minimum 2 |
+| Custom | Space, then the characters typed in the Custom characters field, in order | Varies, minimum 2; fewer falls back to Blocks |
 
 **Glyph atlas.** On load and on a charset change, the active set's bitmaps go into a small texture with one row per glyph and 128 texels per row (row-major 8×16). The scoring pass and the draw pass both read it. Per glyph, `n_on` is the number of lit pixels and `n_off = 128 − n_on`.
 
 ## The grid
 
-- A cell is 8×16 source pixels at scale 1. **Cell scale** (1×–4×) multiplies both, so cells become 16×32, 24×48 or 32×64; at scale `s` each 8×16 sample is the mean of an `s×s` pixel block, and glyphs are drawn nearest-neighbor at `s×`.
-- The output is the source's size. The grid is centered (or top-left, a setting). Leftover edge pixels are black or transparent (a setting).
+- A cell is 8×16 source pixels at scale 1. **Cell scale** (1×–4×) multiplies both, so cells become 16×32, 24×48 or 32×64; at scale `s` each 8×16 sample is the mean of an `s×s` pixel block (alpha-weighted, in linear RGB; the sample's alpha is the block's mean alpha), and glyphs are drawn nearest-neighbor at `s×`.
+- The output is the source's size. The grid is centered (or top-left, a setting); when the leftover is odd, the extra pixel goes to the bottom or right. Leftover edge pixels are black or transparent (a setting). A source smaller than one cell passes through unchanged.
 - A 1920×1080 source at scale 1 is 240×67 cells, with 4 rows of pixels left over at the top and bottom.
 
 ## Color
 
 - Source pixels are sRGB-encoded. Each sample is converted to linear RGB, then to OKLab (Ottosson, 2020); all scoring and color math is in OKLab. Output colors are converted back to sRGB, clipped to [0, 1].
-- OBS may hand the filter linear or sRGB textures depending on the source and the `gs_framebuffer_srgb` state. The implementation must check both cases and decode exactly once; a test still with known values confirms it (Acceptance).
+- OBS may hand a filter linear or sRGB textures depending on the source and the `gs_framebuffer_srgb` state. Glyphnotic settles this by not declaring `OBS_SOURCE_SRGB`: OBS then always hands it the 8-bit input as stored sRGB-encoded values (bound without the sRGB view, framebuffer sRGB off) and takes back sRGB-encoded output. The shaders decode and encode with the sRGB formulas, so each value is decoded exactly once and the GPU's sRGB hardware isn't used; on the Phase 1 test GPU it was up to 0.43 of an 8-bit step off. The patch still confirms it (Acceptance).
+- OBS hands filters their input premultiplied by alpha, in encoded space (OBS's image loader stores `round(c × a / 255)` in 8 bits). The Sample pass divides alpha back out, so the colors of nearly transparent pixels are coarse.
 - v1.0 works in SDR. With an HDR source or canvas, the filter requests and outputs SDR.
 - **Transparency** (setting, default on): a cell whose mean source alpha is below 0.5 is drawn fully transparent; all other cells are opaque. Color statistics use only pixels with alpha ≥ 0.5 when the cell has any. A keyed camera stays keyed, cut along cell edges.
 
 ## Scoring
 
 For each cell and each glyph `g` in the set, the filter computes a cost; the lowest cost wins, and the lowest glyph index wins a tie. Sums are over the cell's 128 samples: `S_on(g)` is the sum over pixels the glyph lights, `S_tot` the sum over all 128, `S_off = S_tot − S_on`. Vectors are OKLab (L, a, b).
+
+Sums and counts include only the cell's counted samples (alpha ≥ 0.5 when the cell has any; see Transparency), so in a partly transparent cell `n_on` and `n_off` count counted samples; when all 128 count they're the glyph's lit and unlit pixel counts.
+
+Sums may be taken relative to any per-cell constant, which shifts every glyph's cost in the cell equally. Glyphnotic and the reference sum relative to the cell's first counted sample, so a flat cell sums exact zeros, every glyph ties, and space (index 0) wins on any GPU.
 
 ### Mosaic and Poster: free colors
 
@@ -162,9 +170,11 @@ This sequence is a suggestion; the builder may merge or split passes as long as 
 2. **Sample:** source → OKLab plus alpha at sample resolution, `cellsX × 8` by `cellsY × 16`; this is where Cell scale's block averaging happens.
 3. **Cell stats** (cell-res): mean OKLab and mean alpha per cell, plus a flag for Light jump comparing against the previous frame's stats (ping-pong).
 4. **Reduce:** successive downsampling to 1×1 for the Light jump share, and for Ink's Auto levels (`μ`, `σ`), which are then eased against the previous frame's levels (ping-pong 1×1).
-5. **Score** (cell-res): each cell loops over the glyphs and its 128 samples, reading the previous held glyph and boil state. Output: held glyph, shown glyph, boil frames left. Indices are stored as floats, which hold exact integers.
-6. **Color** (cell-res, two targets or passes): text and background color for the shown glyph, blended with the previous colors by Settle (ping-pong).
+5. **Score** (cell-res): each cell loops over the glyphs and its 128 samples, reading the previous held glyph and boil state. Output: held glyph, shown glyph, boil frames left, best cost. Indices are stored as floats, which hold exact integers.
+6. **Color** (one pass into a double-width target, `2 × cellsX` by `cellsY`: even texels hold text colors, odd texels background colors): text and background color for the shown glyph in OKLab, blended with the previous colors by Settle (ping-pong); alpha marks the cell opaque or transparent.
 7. **Draw** (source resolution): each pixel finds its cell, reads the shown glyph's bit from the atlas, and outputs the text or background color, or transparency.
+
+Intermediate targets are 32-bit float RGBA. Every pass reads its inputs with `Load` at integer texel positions derived from the sprite's UVs, so Direct3D and OpenGL index textures the same way.
 
 Ping-pong textures and the frame counter belong to the instance. They are reset when settings change in a way that alters the grid: charset, cell scale, mode-specific color settings, or source size.
 
@@ -174,7 +184,7 @@ All four filters share the groups below; mode-specific settings appear only in t
 
 **Look:** preset list (see Looks) plus Custom.
 
-**Characters:** Set (Blocks / Lines / ASCII / Every glyph / Custom), Custom characters (text, shown only for Custom).
+**Characters:** Set (Blocks / Lines / ASCII / Every glyph / Custom), Custom characters (text, shown only for Custom), and a warning note, shown when the Custom characters give fewer than 2 glyphs and Blocks is used instead.
 
 **Grid:** Cell scale (1×–4×), Alignment (Center / Top-left), Edges (Black / Transparent), Keep transparency (on/off).
 
@@ -253,9 +263,9 @@ CI produces `glyphnotic-<version>-macos.pkg`. It isn't tested; reports are welco
 
 ## Reference implementation
 
-`tools/reference/` is a plain Python + NumPy implementation of Sample, Cell stats and Score for single stills, written from this spec, with motion settings off. It outputs the glyph index per cell. `compare.py` diffs it against a grid dump from the plugin.
+`tools/reference/` is a plain Python + NumPy implementation of Sample, Cell stats and Score for single stills, written from this spec, with motion settings off. It works in float64 and models OBS's 8-bit premultiplied input (see Color). It outputs the glyph index per cell. `compare.py` diffs it against a grid dump from the plugin, checks the cell colors and opacity, and checks the output frame OBS produced against the picture the dump describes.
 
-A debug build of the plugin adds a hidden **Dump grid** button that writes the shown glyph indices and the cell colors for the current frame to a file. The reference implementation exists only to check the plugin; it isn't shipped.
+A debug build of the plugin (CMake option `GLYPHNOTIC_DEBUG_TOOLS`) adds a **Dump grid** button that writes the shown glyph indices and the cell colors for the current frame to a file. The same build makes `tools/harness`, which runs a filter on a still in a headless libobs (OBS's own image source, real renderer) and saves the dump and one output frame; `run_stills.py` runs it and `compare.py` over every test still; `run_color_paths.py` checks colors along OBS's other color paths (filters before and after, 10-bit and HDR canvases, 16-bit and HDR sources). `tools/README.md` has the commands. None of this is shipped.
 
 ## Build phases and acceptance
 
@@ -268,9 +278,9 @@ Each phase ends with a report in `docs/build-history/phase-N.md` covering what w
 - [x] Install paths confirmed and written into Install and `docs/INSTALL.md`
 
 **Phase 1: grid and Mosaic**
-- [ ] Sample, Cell stats, Score and Draw passes; Mosaic filter; cell scale; alignment; edges; transparency
-- [ ] sRGB handling verified: a test still with known patch colors yields cell colors within 1/255 of expected
-- [ ] Reference match: on the test stills with motion off, ≥ 99% of cells match the reference; every mismatch has a cost gap under 1e-4
+- [x] Sample, Cell stats, Score and Draw passes; Mosaic filter; cell scale; alignment; edges; transparency
+- [x] sRGB handling verified: a test still with known patch colors yields cell colors within 1/255 of expected (measured: within 0.003/255)
+- [x] Reference match: on the test stills with motion off, ≥ 99% of cells match the reference; every mismatch has a cost gap under 1e-4 (measured: 100% of cells in all 25 cases, on Direct3D 11 and OpenGL)
 
 **Phase 2: Ink, Poster, Console**
 - [ ] All four filters with their settings; Auto and Manual levels; VGA and custom palettes; Capture palette

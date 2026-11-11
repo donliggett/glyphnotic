@@ -1,0 +1,2 @@
+# Reference implementation and test scripts (tools/reference). Not shipped.
+numpy==2.5.4

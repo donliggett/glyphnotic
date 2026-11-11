@@ -36,8 +36,17 @@ endif()
 
 target_sources(
   ${CMAKE_PROJECT_NAME}
-  PRIVATE src/plugin-main.cpp src/glyph-filter.cpp src/glyph-filter.hpp src/font.cpp src/font.hpp
+  PRIVATE src/plugin-main.cpp src/glyph-filter.cpp src/glyph-filter.hpp src/font.cpp src/font.hpp src/grid.hpp
 )
+
+# Debug tools, never for release builds: the filter's Dump grid button and
+# tools/harness (a headless libobs runner for the reference comparison).
+option(GLYPHNOTIC_DEBUG_TOOLS "Build the Dump grid button and the test harness" OFF)
+if(GLYPHNOTIC_DEBUG_TOOLS)
+  target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE GLYPHNOTIC_DEBUG_TOOLS)
+  add_executable(glyphnotic-harness tools/harness/harness.cpp)
+  target_link_libraries(glyphnotic-harness PRIVATE OBS::libobs)
+endif()
 
 set_target_properties_plugin(${CMAKE_PROJECT_NAME} PROPERTIES OUTPUT_NAME ${_name})
 

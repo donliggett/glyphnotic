@@ -1,0 +1,37 @@
+// Glyphnotic pass: Cell stats (cell resolution).
+//
+// Output: mean OKLab of the cell's counted samples in rgb, mean alpha of all
+// 128 samples in a. A cell whose mean alpha is below 0.5 is drawn
+// transparent when Keep transparency is on.
+
+#include "cells.effect"
+
+float4 PSStats(VertData v_in) : TARGET
+{
+	int2 cell = texel_of(v_in.uv, cell_count);
+	int2 base = cell * int2(8, 16);
+	bool any_opaque = cell_has_opaque(base);
+
+	float3 sum = float3(0.0, 0.0, 0.0);
+	float n = 0.0;
+	float asum = 0.0;
+	for (int ly = 0; ly < 16; ly++) {
+		for (int lx = 0; lx < 8; lx++) {
+			float4 s = load_sample(base, lx, ly);
+			float w = sample_weight(s.a, any_opaque);
+			sum += s.rgb * w;
+			n += w;
+			asum += s.a;
+		}
+	}
+	return float4(sum / max(n, 1.0), asum / 128.0);
+}
+
+technique Draw
+{
+	pass
+	{
+		vertex_shader = VSDefault(v_in);
+		pixel_shader = PSStats(v_in);
+	}
+}
