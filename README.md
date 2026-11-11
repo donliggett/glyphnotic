@@ -4,9 +4,8 @@ An OBS Studio plugin that redraws any video source as a live grid of
 characters. It adds four video filters, one per drawing mode: Ink, Mosaic,
 Poster and Console.
 
-**Status:** in development. Phase 1 is done: the "Glyphnotic Mosaic" filter
-draws the character grid ("Glyphnotic Ink" still passes the picture through
-until Phase 2). See
+**Status:** in development. Phase 2 is done: all four filters draw, with
+their settings and looks; the motion controls come in Phase 3. See
 [docs/SPEC.md](docs/SPEC.md) for the full design and build phases, and
 [docs/build-history/](docs/build-history/) for a report on each phase.
 

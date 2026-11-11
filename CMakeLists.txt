@@ -36,7 +36,20 @@ endif()
 
 target_sources(
   ${CMAKE_PROJECT_NAME}
-  PRIVATE src/plugin-main.cpp src/glyph-filter.cpp src/glyph-filter.hpp src/font.cpp src/font.hpp src/grid.hpp
+  PRIVATE
+    src/plugin-main.cpp
+    src/glyph-filter.cpp
+    src/glyph-filter.hpp
+    src/modes.cpp
+    src/modes.hpp
+    src/presets.cpp
+    src/presets.hpp
+    src/palette.cpp
+    src/palette.hpp
+    src/settings.hpp
+    src/font.cpp
+    src/font.hpp
+    src/grid.hpp
 )
 
 # Debug tools, never for release builds: the filter's Dump grid button and

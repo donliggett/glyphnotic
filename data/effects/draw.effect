@@ -9,6 +9,9 @@
 // sRGB-encoded with the formula (the filter isn't OBS_SOURCE_SRGB, so OBS
 // expects encoded values). output_linear is set only if OBS's linear sRGB
 // state is on; the framebuffer then encodes. Alpha is always 0 or 1.
+//
+// Poster: poster_levels > 0 snaps each encoded channel to the nearest of that
+// many evenly spaced values from 0 to 1: v' = round(v * (levels - 1)) / (levels - 1).
 
 #include "common.effect"
 
@@ -21,6 +24,7 @@ uniform float2 grid_size; // in source pixels
 uniform int cell_scale;
 uniform float edges_transparent;
 uniform float output_linear;
+uniform float poster_levels; // 0 = off
 
 float4 PSDraw(VertData v_in) : TARGET
 {
@@ -40,8 +44,12 @@ float4 PSDraw(VertData v_in) : TARGET
 	if (c.a < 0.5)
 		return float4(0.0, 0.0, 0.0, 0.0);
 
-	float3 lin = saturate(oklab_to_linear(c.rgb));
-	return float4((output_linear > 0.5) ? lin : srgb_encode(lin), 1.0);
+	float3 enc = srgb_encode(saturate(oklab_to_linear(c.rgb)));
+	if (poster_levels > 0.5) {
+		float steps = poster_levels - 1.0;
+		enc = round(enc * steps) / steps;
+	}
+	return float4((output_linear > 0.5) ? srgb_decode(enc) : enc, 1.0);
 }
 
 technique Draw

@@ -1,0 +1,32 @@
+// Glyphnotic pass: Lightness (Ink only, sample resolution).
+//
+// Each sample's OKLab L is stretched by this frame's levels and shaped:
+//   L' = ink * clamp((L - lo) / (hi - lo), 0, 1) ^ gamma
+// Output: L' in r, the sample's alpha in a, so the Ink Score pass reads it
+// like the Sample output (see cells.effect).
+
+#include "common.effect"
+
+uniform texture2d samples;
+uniform texture2d levels; // 1x1: lo, hi, mu, sigma
+uniform float2 sample_size;
+uniform float ink_lightness;
+uniform float gamma;
+
+float4 PSLightness(VertData v_in) : TARGET
+{
+	int2 p = texel_of(v_in.uv, sample_size);
+	float4 s = samples.Load(int3(p, 0));
+	float2 lv = levels.Load(int3(0, 0, 0)).xy;
+	float x = saturate((s.x - lv.x) / (lv.y - lv.x));
+	return float4(ink_lightness * pow(x, gamma), 0.0, 0.0, s.a);
+}
+
+technique Draw
+{
+	pass
+	{
+		vertex_shader = VSDefault(v_in);
+		pixel_shader = PSLightness(v_in);
+	}
+}

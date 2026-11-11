@@ -1,2 +1,6 @@
-# Reference implementation and test scripts (tools/reference). Not shipped.
+# Glyphnotic's Python environment (.venv at the repository root). Not shipped.
+# The reference implementation and test scripts (tools/reference):
 numpy==2.5.4
+# The formatters CI checks with (the versions in OBS's Homebrew tap):
+clang-format==19.1.7
+gersemi==0.21.0

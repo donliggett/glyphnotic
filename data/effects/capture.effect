@@ -1,0 +1,43 @@
+// Glyphnotic pass: Capture (Console's Capture palette button, on request).
+//
+// Downscales the Sample pass output to about 160x90 for palette capture:
+// each texel is the alpha-weighted mean OKLab of a block of samples, and the
+// block's mean alpha. The CPU reads it back and runs k-means.
+
+#include "common.effect"
+
+uniform texture2d samples;
+uniform float2 sample_size;
+uniform float2 capture_size;
+
+float4 PSCapture(VertData v_in) : TARGET
+{
+	int2 t = texel_of(v_in.uv, capture_size);
+	int2 ssize = int2(sample_size);
+	int2 csize = int2(capture_size);
+	int2 p0 = (t * ssize) / csize;
+	int2 p1 = ((t + int2(1, 1)) * ssize) / csize;
+
+	float3 sum = float3(0.0, 0.0, 0.0);
+	float asum = 0.0;
+	float n = 0.0;
+	for (int y = p0.y; y < p1.y; y++) {
+		for (int x = p0.x; x < p1.x; x++) {
+			float4 s = samples.Load(int3(x, y, 0));
+			sum += s.rgb * s.a;
+			asum += s.a;
+			n += 1.0;
+		}
+	}
+	float3 lab = (asum > 0.0) ? (sum / asum) : float3(0.0, 0.0, 0.0);
+	return float4(lab, asum / max(n, 1.0));
+}
+
+technique Draw
+{
+	pass
+	{
+		vertex_shader = VSDefault(v_in);
+		pixel_shader = PSCapture(v_in);
+	}
+}

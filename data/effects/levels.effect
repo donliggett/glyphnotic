@@ -1,0 +1,132 @@
+// Glyphnotic passes: Reduce and Levels (Ink only).
+//
+// Reduce sums blocks of `src` into a smaller target, again and again until
+// one texel is left:
+//   ReduceStats reads the Cell stats output and sums, per cell drawn opaque,
+//     (1, L, L^2), with L the cell's raw mean lightness;
+//   ReduceSum sums the rgb of a previous Reduce output.
+// Levels (1x1) turns those sums into this frame's lo and hi:
+//   Auto: mean mu and deviation sigma of the cells' L, target lo = mu - 2 sigma,
+//     hi = mu + 2 sigma, clamped to [0, 1] and widened to hi - lo >= 0.05;
+//     then eased from the previous frame's levels: prev + (target - prev) * ease
+//     (ease = 1 - exp(-dt / adapt speed); ease = 1 snaps).
+//   Manual: lo = black point, hi = max(white point, black point + 0.05).
+// Output: (lo, hi, mu, sigma).
+
+#include "common.effect"
+
+uniform texture2d src;
+uniform float2 src_size;
+uniform float2 dst_size;
+uniform int block;
+uniform float keep_transparency;
+
+uniform texture2d sums;
+uniform texture2d prev;
+uniform float levels_auto;
+uniform float black_point;
+uniform float white_point;
+uniform float ease;
+
+float4 PSReduceStats(VertData v_in) : TARGET
+{
+	int2 t = texel_of(v_in.uv, dst_size);
+	int2 n = int2(src_size);
+	float3 acc = float3(0.0, 0.0, 0.0);
+	for (int j = 0; j < block; j++) {
+		for (int i = 0; i < block; i++) {
+			int2 p = t * block + int2(i, j);
+			if (p.x < n.x && p.y < n.y) {
+				float4 s = src.Load(int3(p, 0));
+				float w = (keep_transparency > 0.5 && s.a < 0.5) ? 0.0 : 1.0;
+				acc += float3(w, w * s.x, w * s.x * s.x);
+			}
+		}
+	}
+	return float4(acc, 0.0);
+}
+
+float4 PSReduceSum(VertData v_in) : TARGET
+{
+	int2 t = texel_of(v_in.uv, dst_size);
+	int2 n = int2(src_size);
+	float3 acc = float3(0.0, 0.0, 0.0);
+	for (int j = 0; j < block; j++) {
+		for (int i = 0; i < block; i++) {
+			int2 p = t * block + int2(i, j);
+			if (p.x < n.x && p.y < n.y)
+				acc += src.Load(int3(p, 0)).rgb;
+		}
+	}
+	return float4(acc, 0.0);
+}
+
+float4 PSLevels(VertData v_in) : TARGET
+{
+	// Texel (0, 0) of the 1x1 inputs, taken from the uv: a shader that doesn't
+	// read its uv loses that attribute in GLSL, and libobs's OpenGL draw fails.
+	int2 t = texel_of(v_in.uv, float2(1.0, 1.0));
+	float3 s = sums.Load(int3(t, 0)).rgb;
+	float mu = 0.5;
+	float sigma = 0.0;
+	if (s.x > 0.0) {
+		mu = s.y / s.x;
+		sigma = sqrt(max(s.z / s.x - mu * mu, 0.0));
+	}
+
+	float lo;
+	float hi;
+	if (levels_auto > 0.5) {
+		lo = saturate(mu - 2.0 * sigma);
+		hi = saturate(mu + 2.0 * sigma);
+		if (hi - lo < 0.05) {
+			float c = 0.5 * (lo + hi);
+			lo = c - 0.025;
+			hi = c + 0.025;
+			if (lo < 0.0) {
+				lo = 0.0;
+				hi = 0.05;
+			}
+			if (hi > 1.0) {
+				hi = 1.0;
+				lo = 0.95;
+			}
+		}
+		if (ease < 1.0) {
+			float2 p = prev.Load(int3(t, 0)).xy;
+			lo = p.x + (lo - p.x) * ease;
+			hi = p.y + (hi - p.y) * ease;
+		}
+	} else {
+		lo = black_point;
+		hi = max(white_point, black_point + 0.05);
+	}
+	return float4(lo, hi, mu, sigma);
+}
+
+technique ReduceStats
+{
+	pass
+	{
+		vertex_shader = VSDefault(v_in);
+		pixel_shader = PSReduceStats(v_in);
+	}
+}
+
+technique ReduceSum
+{
+	pass
+	{
+		vertex_shader = VSDefault(v_in);
+		pixel_shader = PSReduceSum(v_in);
+	}
+}
+
+technique Levels
+{
+	pass
+	{
+		vertex_shader = VSDefault(v_in);
+		pixel_shader = PSLevels(v_in);
+	}
+}

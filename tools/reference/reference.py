@@ -1,11 +1,12 @@
-"""Glyphnotic reference implementation: Sample, Cell stats and Score.
+"""Glyphnotic reference implementation: Sample, Cell stats, Levels and Score.
 
 Plain Python + NumPy, float64, written from docs/SPEC.md (not from the
 plugin's shaders). It handles single stills with motion off and outputs the
 glyph index per cell plus the cell colors. It exists only to check the
 plugin; it isn't shipped.
 
-Phase 1 covers Mosaic.
+It covers all four modes: Mosaic, Poster (Mosaic, colors snapped when
+drawn), Ink (Auto and Manual levels) and Console.
 """
 
 import os
@@ -227,9 +228,193 @@ def mosaic_colors(lab, alpha, glyphs, chosen):
     return text, back
 
 
-def run(img, mode="mosaic", charset="blocks", custom="", scale=1, alignment="center", font=None):
-    if mode != "mosaic":
-        raise NotImplementedError("Phase 1 reference covers Mosaic only")
+def poster_snap(srgb255, levels):
+    """Poster: each sRGB channel (0-255) to the nearest of `levels` evenly spaced values."""
+    step = 255.0 / (levels - 1)
+    return np.round(srgb255 / step) * step
+
+
+# ---------------------------------------------------------------------------
+# Ink (spec: Ink: brightness first, shape second)
+
+FIXED_INKS = {"green": (-0.12, 0.10), "amber": (0.034, 0.136), "white": (0.0, 0.0)}
+
+INK_DEFAULTS = dict(color="cell", a=0.0, b=0.0, background="black", lightness=0.92, saturation=1.4,
+                    gamma=0.85, shape=0.35, levels="auto", black_point=0.0, white_point=1.0)
+
+
+def drawn_opaque(mean_alpha, keep_transparency):
+    return ~(keep_transparency & (mean_alpha < 0.5))
+
+
+def auto_levels(mean_lab, mean_alpha, keep_transparency):
+    """Auto levels' target: (lo, hi, mu, sigma) over the cells drawn opaque."""
+    L = mean_lab[..., 0][drawn_opaque(mean_alpha, keep_transparency)]
+    if L.size:
+        mu = L.mean()
+        sigma = np.sqrt(max((L * L).mean() - mu * mu, 0.0))
+    else:
+        mu, sigma = 0.5, 0.0
+    lo = min(max(mu - 2 * sigma, 0.0), 1.0)
+    hi = min(max(mu + 2 * sigma, 0.0), 1.0)
+    if hi - lo < 0.05:
+        c = 0.5 * (lo + hi)
+        lo, hi = c - 0.025, c + 0.025
+        if lo < 0.0:
+            lo, hi = 0.0, 0.05
+        if hi > 1.0:
+            lo, hi = 0.95, 1.0
+    return lo, hi, mu, sigma
+
+
+def manual_levels(black_point, white_point):
+    return black_point, max(white_point, black_point + 0.05)
+
+
+def ink_lightness(lab, lo, hi, ink, gamma):
+    """L' = ink * clamp((L - lo) / (hi - lo), 0, 1) ^ gamma, per sample."""
+    return ink * np.clip((lab[..., 0] - lo) / (hi - lo), 0.0, 1.0) ** gamma
+
+
+def ink_costs(lp, alpha, glyphs, ink, shape):
+    """cost(g) = (level(g) - m)^2 + shape * (n_on ink^2 - 2 ink S_on(L')) / 128.
+
+    m, n_on and S_on use the cell's counted samples; level(g) uses the glyph's
+    own lit-pixel count relative to the set's most lit glyph. S_on is summed
+    relative to the first counted sample's L' (c), as
+    n_on ink (ink - 2c) - 2 ink S_on(L' - c), the same value: a flat cell sums
+    exact zeros, so glyphs with equal counts tie exactly.
+    """
+    w = cell_weights(alpha)
+    m = (lp * w).sum(-1) / np.maximum(w.sum(-1), 1.0)
+    first = np.argmax(w > 0, axis=-1)
+    c = np.take_along_axis(lp, first[..., None], axis=-1)  # (cy, cx, 1)
+    n_glyph = glyphs.sum(axis=1)
+    level = n_glyph / n_glyph.max() * ink                 # (G,)
+    bt = glyphs.T
+    s_on = ((lp - c) * w) @ bt                            # (cy, cx, G)
+    n_on = w @ bt
+    k = ink * (ink - 2.0 * c)
+    return (level - m[..., None]) ** 2 + shape * (n_on * k - 2.0 * ink * s_on) / GLYPH_PIXELS
+
+
+def ink_colors(mean_lab, o):
+    """Text (ink, a, b) and background (black or tint) per cell, from the cell's mean OKLab."""
+    text = np.empty_like(mean_lab)
+    text[..., 0] = o["lightness"]
+    if o["color"] == "cell":
+        text[..., 1:] = mean_lab[..., 1:] * o["saturation"]
+    else:
+        a, b = (o["a"], o["b"]) if o["color"] == "custom" else FIXED_INKS[o["color"]]
+        text[..., 1] = a
+        text[..., 2] = b
+    if o["background"] == "tint":
+        back = mean_lab.copy()
+        back[..., 0] *= 0.6
+    else:
+        back = np.zeros_like(mean_lab)
+    return text, back
+
+
+# ---------------------------------------------------------------------------
+# Console (spec: Console: palette colors)
+
+VGA = [(0x00, 0x00, 0x00), (0x00, 0x00, 0xAA), (0x00, 0xAA, 0x00), (0x00, 0xAA, 0xAA),
+       (0xAA, 0x00, 0x00), (0xAA, 0x00, 0xAA), (0xAA, 0x55, 0x00), (0xAA, 0xAA, 0xAA),
+       (0x55, 0x55, 0x55), (0x55, 0x55, 0xFF), (0x55, 0xFF, 0x55), (0x55, 0xFF, 0xFF),
+       (0xFF, 0x55, 0x55), (0xFF, 0x55, 0xFF), (0xFF, 0xFF, 0x55), (0xFF, 0xFF, 0xFF)]
+BACKGROUND_SLOTS = 8
+
+
+def palette_lab(palette_rgb):
+    rgb = np.array(palette_rgb, dtype=np.float64) / 255.0
+    return linear_to_oklab(srgb_decode(rgb))
+
+
+def _shifted(lab, alpha):
+    """Counted samples relative to the cell's first counted sample, the weights and that sample."""
+    w = cell_weights(alpha)
+    first = np.argmax(w > 0, axis=-1)
+    shift = np.take_along_axis(lab, first[..., None, None], axis=-2)[..., 0, :]
+    return (lab - shift[..., None, :]) * w[..., None], w, shift
+
+
+def _console_terms(y, w, glyphs, pal, shift):
+    """Per glyph: the best text slot, best background slot and the cost, for the cells in y.
+
+    The spec's cost, min_k [n_on |P_k|^2 - 2 S_on.P_k] + min_k<8 [...], computed
+    relative to the cell's first counted sample c (P' = P - c, Q = |P'|^2),
+    which changes every glyph's cost in the cell by the same amount. A side
+    with no counted samples takes the other side's slot. When both sides get
+    the same slot k the cost is n Q_k - 2 S.P'_k from the cell's totals, so
+    all such glyphs (they draw the same picture) tie exactly.
+    """
+    bt = glyphs.T
+    tot = y.sum(axis=-2)                                   # (..., 3)
+    ntot = w.sum(axis=-1)
+    s_on = np.stack([y[..., c] @ bt for c in range(3)], axis=-1)   # (..., G, 3)
+    n_on = w @ bt                                          # (..., G)
+    s_off = tot[..., None, :] - s_on
+    n_off = ntot[..., None] - n_on
+    pp = pal - shift[..., None, :]                         # (..., 16, 3)
+    q = (pp ** 2).sum(-1)                                  # (..., 16)
+    vt = n_on[..., None] * q[..., None, :] - 2.0 * np.einsum("...gc,...kc->...gk", s_on, pp)
+    vb = (n_off[..., None] * q[..., None, :BACKGROUND_SLOTS] -
+          2.0 * np.einsum("...gc,...kc->...gk", s_off, pp[..., :BACKGROUND_SLOTS, :]))
+    kt = np.argmin(vt, axis=-1)                            # lowest slot wins a tie
+    kb = np.argmin(vb, axis=-1)
+    kt = np.where(n_on > 0, kt, kb)                        # a side with no samples takes the other's slot
+    kb = np.where(n_off > 0, kb, kt)
+    qt = np.take_along_axis(q[..., None, :], kt[..., None], -1)[..., 0]
+    qb = np.take_along_axis(q[..., None, :], kb[..., None], -1)[..., 0]
+    pt = np.take_along_axis(pp[..., None, :, :], kt[..., None, None], -2)[..., 0, :]
+    pb = np.take_along_axis(pp[..., None, :, :], kb[..., None, None], -2)[..., 0, :]
+    split = (n_on * qt + n_off * qb - 2.0 * ((s_on * pt).sum(-1) + (s_off * pb).sum(-1))) / GLYPH_PIXELS
+    whole = (ntot[..., None] * qb - 2.0 * (tot[..., None, :] * pb).sum(-1)) / GLYPH_PIXELS
+    cost = np.where(kt == kb, whole, split)
+    return kt, kb, cost, n_on, n_off
+
+
+def console_costs(lab, alpha, glyphs, pal):
+    """Cost of every glyph for every cell: (cy, cx, G). Row by row to bound memory."""
+    y, w, shift = _shifted(lab, alpha)
+    out = np.empty(lab.shape[:2] + (glyphs.shape[0],))
+    for r in range(lab.shape[0]):
+        out[r] = _console_terms(y[r], w[r], glyphs, pal, shift[r])[2]
+    return out
+
+
+def console_colors(lab, alpha, glyphs, pal, chosen):
+    """Text and background OKLab (palette colors) and slots for the given glyph per cell."""
+    y, w, shift = _shifted(lab, alpha)
+    g = glyphs[chosen]                                     # (cy, cx, 128): one glyph per cell
+    tot = y.sum(axis=-2)
+    ntot = w.sum(axis=-1)
+    s_on = (y * g[..., None]).sum(axis=-2)
+    n_on = (w * g).sum(axis=-1)
+    s_off = tot - s_on
+    n_off = ntot - n_on
+    pp = pal - shift[..., None, :]                         # (cy, cx, 16, 3)
+    q = (pp ** 2).sum(-1)
+    vt = n_on[..., None] * q - 2.0 * np.einsum("...c,...kc->...k", s_on, pp)
+    vb = n_off[..., None] * q[..., :BACKGROUND_SLOTS] - \
+        2.0 * np.einsum("...c,...kc->...k", s_off, pp[..., :BACKGROUND_SLOTS, :])
+    kt = np.argmin(vt, axis=-1)
+    kb = np.argmin(vb, axis=-1)
+    kt = np.where(n_on > 0, kt, kb)                        # a side with no samples takes the other's slot
+    kb = np.where(n_off > 0, kb, kt)
+    return pal[kt], pal[kb], kt, kb
+
+
+# ---------------------------------------------------------------------------
+
+def run(img, mode="mosaic", charset="blocks", custom="", scale=1, alignment="center", font=None,
+        keep_transparency=True, ink=None, palette=None, levels=None):
+    """Runs the reference on a still with motion off.
+
+    ink: Ink settings (keys of INK_DEFAULTS); palette: Console's 16 sRGB triples (default VGA);
+    levels: Ink's (lo, hi) to use instead of the still's own (to check eased levels).
+    """
     font = font or Font()
     chars, glyphs = build_charset(font, charset, custom)
     if len(chars) < 2:
@@ -237,8 +422,38 @@ def run(img, mode="mosaic", charset="blocks", custom="", scale=1, alignment="cen
     grid = make_grid(img.shape[1], img.shape[0], scale, alignment)
     lab, alpha = sample_pass(img, grid)
     mean_lab, mean_alpha = stats_pass(lab, alpha)
-    costs = mosaic_costs(lab, alpha, glyphs)
+    r = dict(grid=grid, chars=chars, glyphs=glyphs, lab=lab, alpha=alpha, mean_lab=mean_lab,
+             mean_alpha=mean_alpha, mode=mode)
+    if mode in ("mosaic", "poster"):
+        costs = mosaic_costs(lab, alpha, glyphs)
+    elif mode == "ink":
+        o = dict(INK_DEFAULTS, **(ink or {}))
+        if levels is not None:
+            levels = tuple(levels[:2]) + (None, None)
+        elif o["levels"] == "auto":
+            levels = auto_levels(mean_lab, mean_alpha, keep_transparency)
+        else:
+            levels = manual_levels(o["black_point"], o["white_point"]) + (None, None)
+        r.update(ink=o, levels=levels)
+        r["lp"] = ink_lightness(lab, levels[0], levels[1], o["lightness"], o["gamma"])
+        costs = ink_costs(r["lp"], alpha, glyphs, o["lightness"], o["shape"])
+    elif mode == "console":
+        r["palette_rgb"] = palette or VGA
+        r["pal"] = palette_lab(r["palette_rgb"])
+        costs = console_costs(lab, alpha, glyphs, r["pal"])
+    else:
+        raise ValueError("unknown mode %r" % mode)
     best = np.argmin(costs, axis=-1)           # first minimum: lowest index wins a tie
-    text, back = mosaic_colors(lab, alpha, glyphs, best)
-    return dict(grid=grid, chars=chars, glyphs=glyphs, lab=lab, alpha=alpha, mean_lab=mean_lab,
-                mean_alpha=mean_alpha, costs=costs, best=best, text=text, back=back)
+    r.update(costs=costs, best=best)
+    r["text"], r["back"] = colors_for(r, best)
+    return r
+
+
+def colors_for(r, chosen):
+    """Text and background OKLab per cell for the given glyphs (Poster: before snapping)."""
+    if r["mode"] in ("mosaic", "poster"):
+        return mosaic_colors(r["lab"], r["alpha"], r["glyphs"], chosen)
+    if r["mode"] == "ink":
+        return ink_colors(r["mean_lab"], r["ink"])
+    text, back, _, _ = console_colors(r["lab"], r["alpha"], r["glyphs"], r["pal"], chosen)
+    return text, back

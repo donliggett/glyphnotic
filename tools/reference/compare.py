@@ -2,18 +2,22 @@
 
     python compare.py STILL.png DUMP.json [--frame FRAME.pam] [--custom TEXT] [--json]
 
-Checks (docs/SPEC.md, Phase 1):
+Works for every mode; the dump carries the mode and its settings.
+
+Checks (docs/SPEC.md, Phases 1 and 2):
   - the character set and grid geometry match;
+  - Ink with Auto levels: the plugin's lo/hi match the reference's within 1e-5;
   - glyphs: >= 99% of cells match the reference, and every mismatch has a
     cost gap (reference cost of the plugin's glyph minus the reference's best)
     under 1e-4;
   - colors: the dump's text/background colors against the reference's colors
     for the same glyph, in sRGB 0-255 units;
-  - known colors: every cell whose source pixels are all one color (a flat
-    cell) must come out as that color within 1/255;
+  - known colors (Mosaic and Poster): every cell whose source pixels are all
+    one color (a flat cell) must come out as that color within 1/255;
   - opacity per cell;
   - with --frame, the output frame OBS produced matches the picture the dump
-    describes (glyph bitmaps, colors, edges) within 1/255 per channel.
+    describes (glyph bitmaps, colors, edges; Poster's snapped colors)
+    within 1/255 per channel.
 
 Exit status 0 when every check passes.
 """
@@ -30,18 +34,37 @@ import reference as ref
 GAP_LIMIT = 1e-4
 MATCH_MIN = 0.99
 COLOR_LIMIT = 1.0  # sRGB, 0-255 units
+LEVELS_LIMIT = 1e-5
+POSTER_AMBIGUOUS = 1e-3  # a snap this close to a rounding boundary may go either way
 
 
-def expected_frame(dump, glyph_bits, width, height):
-    """The picture the dump describes, as uint8 RGBA."""
+def cell_colors_8bit(dump, key):
+    """A cell color as drawn, in 8-bit units, and an alternative where Poster's
+    snap is too close to a rounding boundary to call (else the same value)."""
+    v = np.array(dump[key])
+    levels = dump.get("poster_levels")
+    if not levels:
+        r = np.rint(v)
+        return r, r
+    step = 255.0 / (levels - 1)
+    x = v / step
+    snapped = np.round(x) * step
+    frac = x - np.floor(x)
+    near = np.abs(frac - 0.5) < POSTER_AMBIGUOUS
+    other = np.where(np.round(x) > x, np.floor(x), np.ceil(x)) * step
+    return np.rint(snapped), np.rint(np.where(near, other, snapped))
+
+
+def expected_frame(dump, glyph_bits, width, height, alt=False):
+    """The picture the dump describes, as uint8 RGBA. alt: Poster's other snap where ambiguous."""
     cx, cy, s = dump["cells_x"], dump["cells_y"], dump["cell_scale"]
     ox, oy = dump["offset_x"], dump["offset_y"]
     edge = (0, 0, 0, 0) if dump["edges"] == "transparent" else (0, 0, 0, 255)
     out = np.empty((height, width, 4), dtype=np.uint8)
     out[...] = edge
     glyph = np.array(dump["glyph"]).reshape(cy, cx).astype(int)
-    text = np.rint(np.array(dump["text_srgb"])).reshape(cy, cx, 3)
-    back = np.rint(np.array(dump["bg_srgb"])).reshape(cy, cx, 3)
+    text = cell_colors_8bit(dump, "text_srgb")[1 if alt else 0].reshape(cy, cx, 3)
+    back = cell_colors_8bit(dump, "bg_srgb")[1 if alt else 0].reshape(cy, cx, 3)
     opaque = np.array(dump["opaque"]).reshape(cy, cx) > 0.5
     bits = glyph_bits[glyph].reshape(cy, cx, 16, 8)            # per cell bitmap
     bits = bits.repeat(s, axis=2).repeat(s, axis=3)           # nearest-neighbor at scale s
@@ -69,10 +92,12 @@ def compare(still_path, dump_path, frame_path=None, custom=""):
     dump = json.load(open(dump_path))
     font = ref.Font()
     charset = dump["charset_name"]
-    r = ref.run(img, mode=dump["mode"], charset=charset, custom=custom, scale=dump["cell_scale"],
-                alignment=dump["alignment"], font=font)
+    mode = dump.get("mode", "mosaic")
+    r = ref.run(img, mode=mode, charset=charset, custom=custom, scale=dump["cell_scale"],
+                alignment=dump["alignment"], font=font, keep_transparency=dump["keep_transparency"],
+                ink=dump.get("ink"), palette=[tuple(c) for c in dump["palette"]] if "palette" in dump else None)
     grid = r["grid"]
-    res = {"still": still_path, "dump": dump_path, "checks": {}}
+    res = {"still": still_path, "dump": dump_path, "mode": mode, "checks": {}}
     checks = res["checks"]
 
     checks["charset"] = dump["charset"] == r["chars"]
@@ -82,6 +107,12 @@ def compare(still_path, dump_path, frame_path=None, custom=""):
             {k: dump[k] for k in ("cells_x", "cells_y", "offset_x", "offset_y")}, grid)
         res["pass"] = False
         return res
+
+    if mode == "ink":
+        lo, hi = r["levels"][0], r["levels"][1]
+        res["levels"] = [float(lo), float(hi)]
+        res["levels_error"] = float(max(abs(dump["levels"][0] - lo), abs(dump["levels"][1] - hi)))
+        checks["levels"] = res["levels_error"] < LEVELS_LIMIT
 
     cy, cx = grid["cells_y"], grid["cells_x"]
     plugin = np.array(dump["glyph"]).reshape(cy, cx).astype(int)
@@ -98,7 +129,7 @@ def compare(still_path, dump_path, frame_path=None, custom=""):
     checks["gap"] = res["max_gap"] < GAP_LIMIT
 
     # Colors for the plugin's own glyph, so color errors aren't mixed up with glyph mismatches.
-    text, back = ref.mosaic_colors(r["lab"], r["alpha"], r["glyphs"], plugin)
+    text, back = ref.colors_for(r, plugin)
     d_text = np.array(dump["text_srgb"]).reshape(cy, cx, 3)
     d_back = np.array(dump["bg_srgb"]).reshape(cy, cx, 3)
     color_err = max(np.abs(d_text - ref.oklab_to_srgb255(text)).max(),
@@ -108,7 +139,7 @@ def compare(still_path, dump_path, frame_path=None, custom=""):
 
     flat, flat_rgb = flat_cells(img, grid)
     res["flat_cells"] = int(flat.sum())
-    if flat.any():
+    if flat.any() and mode in ("mosaic", "poster"):
         known_err = max(np.abs(d_text - flat_rgb)[flat].max(), np.abs(d_back - flat_rgb)[flat].max())
         res["max_known_color_error"] = float(known_err)
         checks["known_colors"] = known_err <= COLOR_LIMIT
@@ -122,8 +153,11 @@ def compare(still_path, dump_path, frame_path=None, custom=""):
 
     if frame_path:
         frame = imageio_min.read_pam(frame_path)
-        exp = expected_frame(dump, _charset_bits(font, dump), img.shape[1], img.shape[0])
-        diff = np.abs(frame.astype(int) - exp.astype(int)).max(axis=-1)
+        bits = _charset_bits(font, dump)
+        exp = expected_frame(dump, bits, img.shape[1], img.shape[0])
+        alt = expected_frame(dump, bits, img.shape[1], img.shape[0], alt=True)
+        diff = np.minimum(np.abs(frame.astype(int) - exp.astype(int)).max(axis=-1),
+                          np.abs(frame.astype(int) - alt.astype(int)).max(axis=-1))
         res["frame_bad_pixels"] = int((diff > 1).sum())
         res["frame_max_diff"] = int(diff.max())
         checks["frame"] = res["frame_bad_pixels"] == 0

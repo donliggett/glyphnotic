@@ -1,12 +1,26 @@
 // Glyphnotic pass: Score (cell resolution).
 //
 // Each cell tries every glyph in the set and keeps the lowest cost; the
-// lowest glyph index wins a tie. Mosaic and Poster (free colors):
+// lowest glyph index wins a tie. S and n count only the cell's counted
+// samples (see cells.effect). One technique per scoring (docs/SPEC.md,
+// Scoring):
 //
-//   cost(g) = -( |S_on|^2 / n_on + |S_off|^2 / n_off ) / 128
+//   Mosaic (Mosaic and Poster, free colors):
+//     cost(g) = -( |S_on|^2 / n_on + |S_off|^2 / n_off ) / 128
+//     with a term dropped when its count is 0.
 //
-// with a term dropped when its count is 0. S and n count only the cell's
-// counted samples (see cells.effect).
+//   Ink (lightness only; `samples` is the Lightness pass output, L' in r):
+//     cost(g) = (level(g) - m)^2 + shape * (n_on*ink^2 - 2*ink*S_on(L')) / 128
+//     level(g) = glyph_n_on(g) / max_n_on * ink, m = mean L' of the cell.
+//
+//   Console (palette colors; text from slots 0..15, background from 0..7):
+//     cost(g) = ( min_k [n_on|P_k|^2 - 2 S_on.P_k] + min_k<8 [n_off|P_k|^2 - 2 S_off.P_k] ) / 128
+//     computed relative to the cell's first counted sample (which changes
+//     every glyph's cost by the same amount). A side with no counted samples
+//     takes the other side's slot. When text and background get the same slot
+//     the cost is computed from the cell's totals, n|P|^2 - 2 S.P, so every
+//     such glyph (they all draw the same picture) ties exactly and the lowest
+//     index wins.
 //
 // Output: held glyph, shown glyph, boil frames left, best cost. Indices are
 // stored as floats, which hold exact integers. Motion (Hold, Boil) comes in
@@ -16,8 +30,16 @@
 
 uniform texture2d atlas; // one row per glyph, 128 texels, 1 = lit
 uniform int glyph_count;
+uniform float ink_lightness;
+uniform float shape;
+uniform float max_n_on; // the most lit pixels of any glyph in the set
 
-float4 PSScore(VertData v_in) : TARGET
+bool glyph_lit(int g, int lx, int ly)
+{
+	return atlas.Load(int3(ly * 8 + lx, g, 0)).r > 0.5;
+}
+
+float4 PSScoreMosaic(VertData v_in) : TARGET
 {
 	int2 cell = texel_of(v_in.uv, cell_count);
 	int2 base = cell * int2(8, 16);
@@ -42,7 +64,7 @@ float4 PSScore(VertData v_in) : TARGET
 		float n_on = 0.0;
 		for (int ly = 0; ly < 16; ly++) {
 			for (int lx = 0; lx < 8; lx++) {
-				if (atlas.Load(int3(ly * 8 + lx, g, 0)).r > 0.5) {
+				if (glyph_lit(g, lx, ly)) {
 					float4 s = load_sample(base, lx, ly);
 					float w = sample_weight(s.a, any_opaque);
 					s_on += (s.rgb - shift) * w;
@@ -67,11 +89,141 @@ float4 PSScore(VertData v_in) : TARGET
 	return float4(best_glyph, best_glyph, 0.0, best_cost);
 }
 
-technique Draw
+float4 PSScoreInk(VertData v_in) : TARGET
+{
+	int2 cell = texel_of(v_in.uv, cell_count);
+	int2 base = cell * int2(8, 16);
+	bool any_opaque = cell_has_opaque(base);
+	// S_on is summed relative to the first counted sample's L' (c), using
+	// n_on ink^2 - 2 ink S_on = n_on ink (ink - 2c) - 2 ink S_on(L' - c): a
+	// flat cell sums exact zeros, so glyphs with equal counts tie exactly.
+	float c = cell_shift(base, any_opaque).r;
+
+	float sum = 0.0;
+	float ntot = 0.0;
+	for (int ly = 0; ly < 16; ly++) {
+		for (int lx = 0; lx < 8; lx++) {
+			float4 s = load_sample(base, lx, ly);
+			float w = sample_weight(s.a, any_opaque);
+			sum += s.r * w;
+			ntot += w;
+		}
+	}
+	float m = sum / max(ntot, 1.0);
+	float ink = ink_lightness;
+	float k = ink * (ink - 2.0 * c);
+
+	float best_cost = 1.0e30;
+	float best_glyph = 0.0;
+	for (int g = 0; g < glyph_count; g++) {
+		float n_glyph = 0.0;
+		float s_on = 0.0;
+		float n_on = 0.0;
+		for (int ly = 0; ly < 16; ly++) {
+			for (int lx = 0; lx < 8; lx++) {
+				if (glyph_lit(g, lx, ly)) {
+					float4 s = load_sample(base, lx, ly);
+					float w = sample_weight(s.a, any_opaque);
+					n_glyph += 1.0;
+					s_on += (s.r - c) * w;
+					n_on += w;
+				}
+			}
+		}
+		float d = n_glyph / max_n_on * ink - m;
+		float cost = d * d + shape * (n_on * k - 2.0 * ink * s_on) / 128.0;
+		if (cost < best_cost) {
+			best_cost = cost;
+			best_glyph = float(g);
+		}
+	}
+
+	return float4(best_glyph, best_glyph, 0.0, best_cost);
+}
+
+float4 PSScoreConsole(VertData v_in) : TARGET
+{
+	int2 cell = texel_of(v_in.uv, cell_count);
+	int2 base = cell * int2(8, 16);
+	bool any_opaque = cell_has_opaque(base);
+	float3 shift = cell_shift(base, any_opaque);
+
+	float3 tot = float3(0.0, 0.0, 0.0);
+	float ntot = 0.0;
+	for (int ly = 0; ly < 16; ly++) {
+		for (int lx = 0; lx < 8; lx++) {
+			float4 s = load_sample(base, lx, ly);
+			float w = sample_weight(s.a, any_opaque);
+			tot += (s.rgb - shift) * w;
+			ntot += w;
+		}
+	}
+
+	float best_cost = 1.0e30;
+	float best_glyph = 0.0;
+	for (int g = 0; g < glyph_count; g++) {
+		float3 s_on = float3(0.0, 0.0, 0.0);
+		float n_on = 0.0;
+		for (int ly = 0; ly < 16; ly++) {
+			for (int lx = 0; lx < 8; lx++) {
+				if (glyph_lit(g, lx, ly)) {
+					float4 s = load_sample(base, lx, ly);
+					float w = sample_weight(s.a, any_opaque);
+					s_on += (s.rgb - shift) * w;
+					n_on += w;
+				}
+			}
+		}
+		float3 s_off = tot - s_on;
+		float n_off = ntot - n_on;
+		int kt = best_slot(s_on, n_on, shift, 16);
+		int kb = best_slot(s_off, n_off, shift, 8);
+		if (n_on <= 0.0)
+			kt = kb;
+		if (n_off <= 0.0)
+			kb = kt;
+		float3 pt = palette_color(kt) - shift;
+		float3 pb = palette_color(kb) - shift;
+		// One slot for the whole cell: the cost doesn't depend on the glyph,
+		// so compute it from the cell's totals and every such glyph ties exactly.
+		float cost;
+		if (kt == kb)
+			cost = (ntot * dot(pb, pb) - 2.0 * dot(tot, pb)) / 128.0;
+		else
+			cost = (n_on * dot(pt, pt) + n_off * dot(pb, pb) - 2.0 * (dot(s_on, pt) + dot(s_off, pb))) /
+			       128.0;
+		if (cost < best_cost) {
+			best_cost = cost;
+			best_glyph = float(g);
+		}
+	}
+
+	return float4(best_glyph, best_glyph, 0.0, best_cost);
+}
+
+technique Mosaic
 {
 	pass
 	{
 		vertex_shader = VSDefault(v_in);
-		pixel_shader = PSScore(v_in);
+		pixel_shader = PSScoreMosaic(v_in);
+	}
+}
+
+technique Ink
+{
+	pass
+	{
+		vertex_shader = VSDefault(v_in);
+		pixel_shader = PSScoreInk(v_in);
+	}
+}
+
+technique Console
+{
+	pass
+	{
+		vertex_shader = VSDefault(v_in);
+		pixel_shader = PSScoreConsole(v_in);
 	}
 }

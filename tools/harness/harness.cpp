@@ -5,7 +5,9 @@
 //   - one output frame as OBS outputs it (8-bit canvas only; BGRA from OBS,
 //     saved as RGBA PAM);
 //   - OBS's main canvas texture (any canvas format; raw, see below);
-//   - lagged-frame counts and OBS's per-source GPU times over a run.
+//   - lagged-frame counts and OBS's per-source GPU times over a run;
+//   - the filter's settings and properties after changes made the way the
+//     properties window makes them.
 //
 // It's a test tool and is never shipped. It needs a plugin built with
 // GLYPHNOTIC_DEBUG_TOOLS=ON and an installed OBS of the same version that
@@ -68,7 +70,10 @@ const char *kUsage =
 	"         [--filter <id> [--settings <json>]]...  [--instances <n>] [--on-scene]\n"
 	"         [--renderer d3d11|opengl] [--format bgra|i010|p010] [--colorspace srgb|709|2100pq|2100hlg]\n"
 	"         [--range full|partial] [--fps <n>] [--frames <n>] [--profile] [--verbose]\n"
-	"         [--dump <json>] [--frame <pam>] [--main-texture <raw>] [--check-visible <property>]\n";
+	"         [--dump <json>] [--frame <pam>] [--main-texture <raw>] [--check-visible <property>]\n"
+	"         [--ui-set <json> [--ui-no-update]] [--press <button>]... [--wait-frames <n>]\n"
+	"         [--settings-out <json>] [--properties-out <json>]\n"
+	"         [--then-image <png> --then-frames <n> --dump2 <json>]\n";
 
 struct FilterSpec {
 	std::string id;
@@ -77,7 +82,14 @@ struct FilterSpec {
 
 struct Args {
 	std::string obs_dir, plugin, plugin_data, image, dump, frame, main_texture;
-	std::string check_visible; // a property of the first Glyphnotic filter
+	std::string check_visible;      // a property of the first Glyphnotic filter
+	std::string ui_set;             // settings changed as the properties window would
+	bool ui_no_update = false;      // leave out the update after --ui-set: test the callbacks alone
+	std::vector<std::string> press; // buttons of the first Glyphnotic filter
+	int wait_frames = 10;           // frames to wait after --ui-set / --press
+	std::string settings_out, properties_out;
+	std::string then_image, dump2; // switch the still, run, dump again
+	int then_frames = 0;
 	bool hdr_source = false;
 	double hdr_scale = 1.0;
 	std::vector<FilterSpec> filters;
@@ -150,6 +162,24 @@ bool parse_args(int argc, char **argv, Args &a)
 			ok = next(a.main_texture);
 		else if (k == "--check-visible")
 			ok = next(a.check_visible);
+		else if (k == "--ui-set")
+			ok = next(a.ui_set);
+		else if (k == "--ui-no-update")
+			a.ui_no_update = true;
+		else if (k == "--press" && (ok = next(v)))
+			a.press.push_back(v);
+		else if (k == "--wait-frames" && (ok = next(v)))
+			a.wait_frames = atoi(v.c_str());
+		else if (k == "--settings-out")
+			ok = next(a.settings_out);
+		else if (k == "--properties-out")
+			ok = next(a.properties_out);
+		else if (k == "--then-image")
+			ok = next(a.then_image);
+		else if (k == "--then-frames" && (ok = next(v)))
+			a.then_frames = atoi(v.c_str());
+		else if (k == "--dump2")
+			ok = next(a.dump2);
 		else if (k == "--renderer")
 			ok = next(a.renderer);
 		else if (k == "--format")
@@ -475,6 +505,87 @@ void print_profile(const char *what, obs_source_t *source)
 			r.render_avg / 1e6);
 }
 
+// Writes a string as a JSON string literal.
+std::string json_str(const char *s)
+{
+	std::string out = "\"";
+	for (const char *p = s ? s : ""; *p; p++) {
+		if (*p == '"' || *p == '\\')
+			out += '\\';
+		out += *p;
+	}
+	return out + "\"";
+}
+
+// The properties as JSON: name, type, visibility and list items, groups nested.
+void properties_json(obs_properties_t *props, std::string &out)
+{
+	out += "[";
+	bool first = true;
+	for (obs_property_t *p = obs_properties_first(props); p; obs_property_next(&p)) {
+		if (!first)
+			out += ",";
+		first = false;
+		out += "{\"name\":" + json_str(obs_property_name(p)) +
+		       ",\"type\":" + std::to_string(int(obs_property_get_type(p))) +
+		       ",\"visible\":" + (obs_property_visible(p) ? "true" : "false");
+		if (obs_property_get_type(p) == OBS_PROPERTY_LIST) {
+			out += ",\"items\":[";
+			const bool strings = obs_property_list_format(p) == OBS_COMBO_FORMAT_STRING;
+			for (size_t i = 0; i < obs_property_list_item_count(p); i++) {
+				if (i)
+					out += ",";
+				out += strings ? json_str(obs_property_list_item_string(p, i))
+					       : std::to_string(obs_property_list_item_int(p, i));
+			}
+			out += "]";
+		}
+		if (obs_property_get_type(p) == OBS_PROPERTY_GROUP) {
+			out += ",\"content\":";
+			properties_json(obs_property_group_content(p), out);
+		}
+		out += "}";
+	}
+	out += "]";
+}
+
+bool write_file(const std::string &path, const std::string &text)
+{
+	FILE *f = os_fopen(path.c_str(), "wb");
+	if (!f)
+		return false;
+	fwrite(text.data(), 1, text.size(), f);
+	fclose(f);
+	return true;
+}
+
+// Presses Dump grid on a filter and waits for the file.
+bool press_dump(obs_source_t *filter, const std::string &path)
+{
+	os_unlink(path.c_str());
+	// The plugin writes its dump to GLYPHNOTIC_DUMP_PATH.
+#ifdef _WIN32
+	_putenv_s("GLYPHNOTIC_DUMP_PATH", path.c_str());
+#else
+	setenv("GLYPHNOTIC_DUMP_PATH", path.c_str(), 1);
+#endif
+	obs_properties_t *props = filter ? obs_source_properties(filter) : nullptr;
+	obs_property_t *button = props ? obs_properties_get(props, "dump_grid") : nullptr;
+	if (!button) {
+		fprintf(stderr, "no dump_grid button: needs a Glyphnotic filter from a build with "
+				"GLYPHNOTIC_DEBUG_TOOLS=ON\n");
+		obs_properties_destroy(props);
+		return false;
+	}
+	obs_property_button_clicked(button, filter);
+	obs_properties_destroy(props);
+	if (!wait_for([&] { return os_file_exists(path.c_str()); }, 30000)) {
+		fprintf(stderr, "no grid dump written\n");
+		return false;
+	}
+	return true;
+}
+
 int run(const Args &a)
 {
 	uint32_t w = 0, h = 0;
@@ -627,24 +738,58 @@ int run(const Args &a)
 			status = 2;
 		}
 
-		// Press Dump grid and wait for the file.
-		if (status == 0 && !a.dump.empty()) {
-			os_unlink(a.dump.c_str());
-			obs_properties_t *props = dump_filter ? obs_source_properties(dump_filter) : nullptr;
-			obs_property_t *button = props ? obs_properties_get(props, "dump_grid") : nullptr;
-			if (!button) {
-				fprintf(stderr, "no dump_grid button: needs a Glyphnotic filter from a build with "
-						"GLYPHNOTIC_DEBUG_TOOLS=ON\n");
-				status = 2;
-			} else {
-				obs_property_button_clicked(button, dump_filter);
+		// Change settings as the properties window does: open the properties
+		// (OBS runs every modified callback), set values, run each changed
+		// property's modified callback, then update the filter.
+		const bool ui = !a.ui_set.empty() || !a.press.empty();
+		if (status == 0 && ui && dump_filter) {
+			obs_properties_t *props = obs_source_properties(dump_filter);
+			obs_data_t *settings = obs_source_get_settings(dump_filter);
+			if (!a.ui_set.empty()) {
+				obs_data_t *patch = obs_data_create_from_json(a.ui_set.c_str());
+				if (!patch) {
+					fprintf(stderr, "bad --ui-set JSON\n");
+					status = 2;
+				}
+				// The window sets one value at a time; the order within the
+				// patch doesn't matter for these tests, so apply it at once.
+				obs_data_apply(settings, patch);
+				for (obs_data_item_t *item = patch ? obs_data_first(patch) : nullptr; item;
+				     obs_data_item_next(&item)) {
+					const char *name = obs_data_item_get_name(item);
+					obs_property_t *p = obs_properties_get(props, name);
+					if (!p) {
+						fprintf(stderr, "--ui-set: no property %s\n", name);
+					} else if (obs_property_modified(p, settings)) {
+						// The window would refresh: rebuild the properties.
+						obs_properties_destroy(props);
+						props = obs_source_properties(dump_filter);
+					}
+				}
+				obs_data_release(patch);
+				if (!a.ui_no_update)
+					obs_source_update(dump_filter, nullptr);
 			}
+			for (const std::string &name : a.press) {
+				obs_property_t *p = obs_properties_get(props, name.c_str());
+				if (!p || obs_property_get_type(p) != OBS_PROPERTY_BUTTON) {
+					fprintf(stderr, "--press: no button %s\n", name.c_str());
+					status = 2;
+				} else {
+					obs_property_button_clicked(p, dump_filter);
+				}
+			}
+			obs_data_release(settings);
 			obs_properties_destroy(props);
-			if (status == 0 && !wait_for([&] { return os_file_exists(a.dump.c_str()); }, 30000)) {
-				fprintf(stderr, "no grid dump written\n");
+			const int after_ui = grab.count;
+			if (status == 0 && !wait_for([&] { return grab.count >= after_ui + a.wait_frames; }, 30000)) {
+				fprintf(stderr, "no frames after --ui-set/--press\n");
 				status = 2;
 			}
 		}
+
+		if (status == 0 && !a.dump.empty() && !press_dump(dump_filter, a.dump))
+			status = 2;
 
 		// Report which of a filter's properties are visible after OBS applies
 		// the settings (running the modified callbacks, as the properties window does).
@@ -659,6 +804,21 @@ int run(const Args &a)
 							  : "no");
 			obs_data_release(settings);
 			obs_properties_destroy(props);
+		}
+
+		if (status == 0 && dump_filter && !a.settings_out.empty()) {
+			obs_data_t *settings = obs_source_get_settings(dump_filter);
+			if (!write_file(a.settings_out, obs_data_get_json_pretty_with_defaults(settings)))
+				status = 2;
+			obs_data_release(settings);
+		}
+		if (status == 0 && dump_filter && !a.properties_out.empty()) {
+			obs_properties_t *props = obs_source_properties(dump_filter);
+			std::string json;
+			properties_json(props, json);
+			obs_properties_destroy(props);
+			if (!write_file(a.properties_out, json))
+				status = 2;
 		}
 
 		// The picture is still, so any later frame shows the same grid.
@@ -679,6 +839,20 @@ int run(const Args &a)
 				fwrite(grab.rgba.data(), 1, grab.rgba.size(), f);
 				fclose(f);
 			}
+		}
+		// Switch the still (the first image source) and dump again.
+		if (status == 0 && !a.then_image.empty() && !inputs.empty()) {
+			obs_data_t *s = obs_data_create();
+			obs_data_set_string(s, "file", a.then_image.c_str());
+			obs_source_update(inputs[0], s);
+			obs_data_release(s);
+			const int after_switch = grab.count;
+			if (!wait_for([&] { return grab.count >= after_switch + a.then_frames; }, 60000)) {
+				fprintf(stderr, "no frames after --then-image\n");
+				status = 2;
+			}
+			if (status == 0 && !a.dump2.empty() && !press_dump(dump_filter, a.dump2))
+				status = 2;
 		}
 		if (status == 0 && !a.main_texture.empty() && !save_main_texture(a.main_texture)) {
 			fprintf(stderr, "cannot save the main texture\n");
@@ -741,7 +915,8 @@ int main(int argc, char **argv)
 	Args a;
 	const bool parsed = parse_args(argc, argv, a);
 	// Make paths absolute before the working directory changes.
-	for (std::string *p : {&a.obs_dir, &a.plugin, &a.plugin_data, &a.image, &a.dump, &a.frame, &a.main_texture}) {
+	for (std::string *p : {&a.obs_dir, &a.plugin, &a.plugin_data, &a.image, &a.dump, &a.frame, &a.main_texture,
+			       &a.settings_out, &a.properties_out, &a.then_image, &a.dump2}) {
 		if (p->empty())
 			continue;
 		char *abs = os_get_abs_path_ptr(p->c_str());

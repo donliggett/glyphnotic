@@ -2,9 +2,9 @@
 
 #pragma once
 
-namespace glyphnotic {
+#include "settings.hpp"
 
-enum class Mode { Ink = 0, Mosaic, Poster, Console };
+namespace glyphnotic {
 
 class Font;
 

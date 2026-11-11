@@ -55,3 +55,29 @@ float3 cell_shift(int2 base, bool any_opaque)
 	}
 	return shift;
 }
+
+// Console: the 16-color palette, OKLab in rgb, one texel per slot (16x1).
+uniform texture2d palette;
+
+float3 palette_color(int k)
+{
+	return palette.Load(int3(k, 0, 0)).rgb;
+}
+
+// The palette slot among 0..count-1 that best fits n samples summing to s
+// (both relative to `shift`): the lowest n|P - shift|^2 - 2 s.(P - shift).
+// The lowest slot wins a tie.
+int best_slot(float3 s, float n, float3 shift, int count)
+{
+	int best = 0;
+	float best_v = 1.0e30;
+	for (int k = 0; k < count; k++) {
+		float3 p = palette_color(k) - shift;
+		float v = n * dot(p, p) - 2.0 * dot(s, p);
+		if (v < best_v) {
+			best_v = v;
+			best = k;
+		}
+	}
+	return best;
+}

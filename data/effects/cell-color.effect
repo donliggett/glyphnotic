@@ -2,10 +2,19 @@
 //
 // The target is 2*cellsX by cellsY: texel (2*cx, cy) holds cell (cx, cy)'s
 // text color and texel (2*cx + 1, cy) its background color, so one pass
-// writes both without multiple render targets.
+// writes both without multiple render targets. One technique per mode:
 //
-// Mosaic: text = mean of the shown glyph's lit samples, background = mean of
-// its unlit samples; a side with no samples takes the other side's color.
+//   Mosaic (Mosaic and Poster): text = mean of the shown glyph's lit samples,
+//   background = mean of its unlit samples; a side with no samples takes the
+//   other side's color. Poster snaps colors in the Draw pass.
+//
+//   Ink: text = (ink, a, b), with (a, b) the cell's mean (a, b) times
+//   Saturation, or a fixed ink's; background black or the tint
+//   (0.6 * mean L, mean a, mean b).
+//
+//   Console: the palette slots that fit the shown glyph's lit samples (any of
+//   16) and unlit samples (slots 0..7); a side with no samples takes the
+//   other side's slot.
 //
 // Output: OKLab in rgb; a = 1 for an opaque cell, 0 for a transparent one.
 
@@ -13,53 +22,140 @@
 
 uniform texture2d atlas;
 uniform texture2d scores; // Score pass output; .y is the shown glyph
-uniform texture2d stats;  // Cell stats output; .a is the mean alpha
+uniform texture2d stats;  // Cell stats output; rgb mean OKLab, a mean alpha
 uniform float keep_transparency;
 
-float4 PSColor(VertData v_in) : TARGET
-{
-	int2 t = texel_of(v_in.uv, cell_count * float2(2.0, 1.0));
-	int2 cell = int2(t.x / 2, t.y);
-	bool want_background = (t.x - cell.x * 2) == 1;
-	int2 base = cell * int2(8, 16);
-	bool any_opaque = cell_has_opaque(base);
-	float3 shift = cell_shift(base, any_opaque);
-	int g = int(scores.Load(int3(cell, 0)).y + 0.5);
+// Ink
+uniform float ink_lightness;
+uniform float ink_cell; // 1: the cell's own (a, b) times saturation; 0: ink_ab
+uniform float2 ink_ab;
+uniform float saturation;
+uniform float background_tint;
 
-	float3 s_on = float3(0.0, 0.0, 0.0);
-	float n_on = 0.0;
-	float3 tot = float3(0.0, 0.0, 0.0);
-	float ntot = 0.0;
+struct CellTexel {
+	int2 cell;
+	bool want_background;
+};
+
+CellTexel cell_texel(float2 uv)
+{
+	int2 t = texel_of(uv, cell_count * float2(2.0, 1.0));
+	CellTexel c;
+	c.cell = int2(t.x / 2, t.y);
+	c.want_background = (t.x - c.cell.x * 2) == 1;
+	return c;
+}
+
+float cell_opacity(int2 cell)
+{
+	float alpha = stats.Load(int3(cell, 0)).a;
+	return (keep_transparency > 0.5 && alpha < 0.5) ? 0.0 : 1.0;
+}
+
+// Sums of the shown glyph's lit samples and of all samples, relative to shift.
+struct GlyphSums {
+	float3 s_on;
+	float n_on;
+	float3 tot;
+	float ntot;
+};
+
+GlyphSums glyph_sums(int2 base, int g, bool any_opaque, float3 shift)
+{
+	GlyphSums r;
+	r.s_on = float3(0.0, 0.0, 0.0);
+	r.n_on = 0.0;
+	r.tot = float3(0.0, 0.0, 0.0);
+	r.ntot = 0.0;
 	for (int ly = 0; ly < 16; ly++) {
 		for (int lx = 0; lx < 8; lx++) {
 			float4 s = load_sample(base, lx, ly);
 			float w = sample_weight(s.a, any_opaque);
 			float3 y = (s.rgb - shift) * w;
-			tot += y;
-			ntot += w;
+			r.tot += y;
+			r.ntot += w;
 			if (atlas.Load(int3(ly * 8 + lx, g, 0)).r > 0.5) {
-				s_on += y;
-				n_on += w;
+				r.s_on += y;
+				r.n_on += w;
 			}
 		}
 	}
-	float3 s_off = tot - s_on;
-	float n_off = ntot - n_on;
-
-	float3 text = (n_on > 0.0) ? (s_on / n_on) : (s_off / max(n_off, 1.0));
-	float3 back = (n_off > 0.0) ? (s_off / n_off) : text;
-	float3 lab = shift + (want_background ? back : text);
-
-	float alpha = stats.Load(int3(cell, 0)).a;
-	float opaque = (keep_transparency > 0.5 && alpha < 0.5) ? 0.0 : 1.0;
-	return float4(lab, opaque);
+	return r;
 }
 
-technique Draw
+float4 PSColorMosaic(VertData v_in) : TARGET
+{
+	CellTexel c = cell_texel(v_in.uv);
+	int2 base = c.cell * int2(8, 16);
+	bool any_opaque = cell_has_opaque(base);
+	float3 shift = cell_shift(base, any_opaque);
+	int g = int(scores.Load(int3(c.cell, 0)).y + 0.5);
+
+	GlyphSums r = glyph_sums(base, g, any_opaque, shift);
+	float3 s_off = r.tot - r.s_on;
+	float n_off = r.ntot - r.n_on;
+
+	float3 text = (r.n_on > 0.0) ? (r.s_on / r.n_on) : (s_off / max(n_off, 1.0));
+	float3 back = (n_off > 0.0) ? (s_off / n_off) : text;
+	float3 lab = shift + (c.want_background ? back : text);
+	return float4(lab, cell_opacity(c.cell));
+}
+
+float4 PSColorInk(VertData v_in) : TARGET
+{
+	CellTexel c = cell_texel(v_in.uv);
+	float3 mean = stats.Load(int3(c.cell, 0)).rgb;
+	float3 lab;
+	if (c.want_background)
+		lab = (background_tint > 0.5) ? float3(0.6 * mean.x, mean.y, mean.z) : float3(0.0, 0.0, 0.0);
+	else
+		lab = float3(ink_lightness, (ink_cell > 0.5) ? mean.yz * saturation : ink_ab);
+	return float4(lab, cell_opacity(c.cell));
+}
+
+float4 PSColorConsole(VertData v_in) : TARGET
+{
+	CellTexel c = cell_texel(v_in.uv);
+	int2 base = c.cell * int2(8, 16);
+	bool any_opaque = cell_has_opaque(base);
+	float3 shift = cell_shift(base, any_opaque);
+	int g = int(scores.Load(int3(c.cell, 0)).y + 0.5);
+
+	GlyphSums r = glyph_sums(base, g, any_opaque, shift);
+	float3 s_off = r.tot - r.s_on;
+	float n_off = r.ntot - r.n_on;
+	int kt = best_slot(r.s_on, r.n_on, shift, 16);
+	int kb = best_slot(s_off, n_off, shift, 8);
+	if (r.n_on <= 0.0)
+		kt = kb;
+	if (n_off <= 0.0)
+		kb = kt;
+	return float4(palette_color(c.want_background ? kb : kt), cell_opacity(c.cell));
+}
+
+technique Mosaic
 {
 	pass
 	{
 		vertex_shader = VSDefault(v_in);
-		pixel_shader = PSColor(v_in);
+		pixel_shader = PSColorMosaic(v_in);
+	}
+}
+
+technique Ink
+{
+	pass
+	{
+		vertex_shader = VSDefault(v_in);
+		pixel_shader = PSColorInk(v_in);
+	}
+}
+
+technique Console
+{
+	pass
+	{
+		vertex_shader = VSDefault(v_in);
+		pixel_shader = PSColorConsole(v_in);
 	}
 }

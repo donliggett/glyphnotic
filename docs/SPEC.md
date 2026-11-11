@@ -44,21 +44,24 @@ CMakeLists.txt, CMakePresets.json, buildspec.json, cmake/, build-aux/, .github/ 
 cmake/common/manifest.json.in   template for data/manifest.json
 src/
   plugin-main.cpp      module load, registers the four filters
-  glyph-filter.cpp     shared filter: create/destroy/update/properties/render
-  modes.cpp            per-mode settings, presets and effect selection
+  glyph-filter.cpp     shared filter: create/destroy/update/render, palette capture, grid dump
+  modes.cpp            per-mode settings, properties, defaults, applying looks
+  settings.hpp         modes, setting keys, the settings the render thread uses (no libobs dependency)
   font.cpp             PSF1 parser, character sets, glyph atlas (no libobs dependency)
   grid.hpp             grid geometry (no libobs dependency)
-  palette.cpp          built-in palettes, palette capture (k-means)
-  presets.cpp          the looks
+  palette.cpp          color conversions, the VGA palette, palette capture's k-means (no libobs dependency)
+  presets.cpp          the looks table (no libobs dependency)
   plugin-support.*     from the plugin template (logging helper)
 data/
-  effects/*.effect     all GPU passes: sample, stats, score, cell-color, draw; common and cells are shared includes
+  effects/*.effect     all GPU passes: sample, stats, levels (Reduce and Levels), lightness, score, cell-color,
+                       draw, capture; common and cells are shared includes
   fonts/Uni2-Fixed16.psf, fonts/README.md
   locale/en-US.ini
   manifest.json        generated at build time from buildspec.json: OBS 33 Plugin Manager metadata (display name, ID, version, links)
 tools/README.md        how to build and run the test tools
 tools/harness/         headless libobs runner for a filter on a still (debug builds only)
 tools/reference/       Python + NumPy reference implementation, compare and run scripts
+tools/linux-check/     end-of-phase Linux check: OBS under xvfb-run in an Ubuntu 26.04 container
 tests/unit/            standalone C++ unit tests (no OBS needed)
 tests/stills/          openly licensed test stills (with ATTRIBUTION.md)
 docs/
@@ -119,7 +122,7 @@ The palette has 16 OKLab colors `P[0..15]`, ordered so slots 0–7 are the most 
 
 `cost(g) = ( min_k∈0..15 [ n_on |P_k|² − 2 S_on · P_k ] + min_k∈0..7 [ n_off |P_k|² − 2 S_off · P_k ] ) / 128`
 
-The winning slots give the cell's text and background colors; the lowest slot wins a tie.
+The winning slots give the cell's text and background colors; the lowest slot wins a tie. A side with no counted samples takes the other side's slot (its term is 0 for any slot). When both sides end up with the same slot `k`, the cell is one color whatever the glyph, and its cost is computed from the cell's totals as `( n |P_k|² − 2 S_tot · P_k ) / 128`: every such glyph then ties exactly and the lowest index wins, on any GPU. Sums are taken relative to the cell's first counted sample, as above.
 
 ### Ink: brightness first, shape second
 
@@ -127,9 +130,11 @@ Only lightness is scored. Each sample's L is stretched and shaped:
 
 `L' = ink × clamp((L − lo) / (hi − lo), 0, 1) ^ gamma`
 
-Here `lo`/`hi` come from **Levels** (below), `ink` is **Ink lightness**, and `gamma` is **Gamma**. With `m` = the mean of `L'` over the cell, and `level(g) = n_on(g) / max_g n_on × ink`:
+Here `lo`/`hi` come from **Levels** (below), `ink` is **Ink lightness**, and `gamma` is **Gamma**. With `m` = the mean of `L'` over the cell's counted samples, and `level(g) = N(g) / max_g N × ink`, where `N(g)` is the glyph's own lit-pixel count (from the atlas, whatever the cell's transparency):
 
 `cost(g) = (level(g) − m)² + shape × ( n_on × ink² − 2 × ink × S_on(L') ) / 128`
+
+`n_on` and `S_on` use counted samples, as above. `S_on` is summed relative to the first counted sample's `L'` (`c`), as `n_on × ink × (ink − 2c) − 2 × ink × S_on(L' − c)`, the same value: a flat cell then sums exact zeros, and glyphs with equal counts tie exactly.
 
 **Shape** (0–1) trades pure density against matching the glyph's form.
 
@@ -140,8 +145,8 @@ Ink colors:
 
 **Levels** (Ink only):
 
-- **Auto** (default): each frame, take the mean `μ` and standard deviation `σ` of the cells' raw mean lightness; the target is `lo = μ − 2σ`, `hi = μ + 2σ`, clamped to [0, 1] with `hi − lo ≥ 0.05`. The live `lo`/`hi` ease toward the target with time constant **Adapt speed** (0.2–5 s, default 1.5 s), like a camera's auto exposure. They snap on the first frame and on a Light jump.
-- **Manual:** **Black point** and **White point** sliders set `lo` and `hi` directly.
+- **Auto** (default): each frame, take the mean `μ` and standard deviation `σ` (population) of the raw mean lightness of the cells drawn opaque (all cells when Keep transparency is off); the target is `lo = μ − 2σ`, `hi = μ + 2σ`, each clamped to [0, 1]. If then `hi − lo < 0.05`, both move to 0.025 either side of their midpoint, and back inside [0, 1] if that crosses an end (`lo = 0, hi = 0.05` or `lo = 0.95, hi = 1`). With no opaque cells, `μ = 0.5, σ = 0`. The live `lo`/`hi` ease toward the target with time constant **Adapt speed** (0.2–5 s, default 1.5 s), like a camera's auto exposure: `lo += (target − lo) × (1 − e^(−dt / adapt speed))`, with `dt` the time since the last frame. They snap on the first frame, when the grid resets (see Render passes) and on a Light jump.
+- **Manual:** **Black point** and **White point** sliders (0–1, defaults 0 and 1) set `lo = black point` and `hi = max(white point, black point + 0.05)`.
 
 ## Motion
 
@@ -169,20 +174,21 @@ This sequence is a suggestion; the builder may merge or split passes as long as 
 1. **Soften** (skipped at 0): separable Gaussian, two passes at source resolution.
 2. **Sample:** source → OKLab plus alpha at sample resolution, `cellsX × 8` by `cellsY × 16`; this is where Cell scale's block averaging happens.
 3. **Cell stats** (cell-res): mean OKLab and mean alpha per cell, plus a flag for Light jump comparing against the previous frame's stats (ping-pong).
-4. **Reduce:** successive downsampling to 1×1 for the Light jump share, and for Ink's Auto levels (`μ`, `σ`), which are then eased against the previous frame's levels (ping-pong 1×1).
+4. **Reduce:** successive downsampling to 1×1 for the Light jump share, and for Ink's Auto levels: each pass sums 16×16 blocks, the first of `(1, L, L²)` over the cells drawn opaque. A 1×1 **Levels** pass turns the sums into `μ`, `σ` and the target, eased against the previous frame's levels (ping-pong 1×1), or Manual's `lo`/`hi`. Ink then runs a **Lightness** pass at sample resolution: each sample's `L'` and alpha, which its Score pass reads in place of the samples.
 5. **Score** (cell-res): each cell loops over the glyphs and its 128 samples, reading the previous held glyph and boil state. Output: held glyph, shown glyph, boil frames left, best cost. Indices are stored as floats, which hold exact integers.
 6. **Color** (one pass into a double-width target, `2 × cellsX` by `cellsY`: even texels hold text colors, odd texels background colors): text and background color for the shown glyph in OKLab, blended with the previous colors by Settle (ping-pong); alpha marks the cell opaque or transparent.
-7. **Draw** (source resolution): each pixel finds its cell, reads the shown glyph's bit from the atlas, and outputs the text or background color, or transparency.
+7. **Draw** (source resolution): each pixel finds its cell, reads the shown glyph's bit from the atlas, and outputs the text or background color, or transparency. Poster snaps its colors here, after Settle, so the drawn colors are always on its levels.
+8. **Capture** (Console, only when Capture palette is pressed): the Sample output averaged down to about 160×90 (alpha-weighted mean OKLab per block, and the block's mean alpha) and read back.
 
 Intermediate targets are 32-bit float RGBA. Every pass reads its inputs with `Load` at integer texel positions derived from the sprite's UVs, so Direct3D and OpenGL index textures the same way.
 
-Ping-pong textures and the frame counter belong to the instance. They are reset when settings change in a way that alters the grid: charset, cell scale, mode-specific color settings, or source size.
+Ping-pong textures and the frame counter belong to the instance. They are reset when settings change in a way that alters the grid: charset, cell scale, alignment, Keep transparency, mode-specific color settings, or source size.
 
 ## Filters and settings
 
 All four filters share the groups below; mode-specific settings appear only in their own filter. Choosing a **Look** fills in its settings; changing any of them shows the Look as **Custom**.
 
-**Look:** preset list (see Looks) plus Custom.
+**Look:** preset list (see Looks) plus Custom. A new filter starts on its first look. A look sets every setting in Characters (except Custom characters), Motion and the mode's own group, listed or default; it doesn't touch Grid, Custom characters, the custom ink color or the custom palette colors. Settings that don't come through the properties window (a scene file, a script) follow the same rule: a newly named look fills in its settings, and settings that no longer match an unchanged look turn it to Custom. A filter created with settings that name no look keeps them, showing Custom if they differ from the first look.
 
 **Characters:** Set (Blocks / Lines / ASCII / Every glyph / Custom), Custom characters (text, shown only for Custom), and a warning note, shown when the Custom characters give fewer than 2 glyphs and Blocks is used instead.
 
@@ -190,13 +196,13 @@ All four filters share the groups below; mode-specific settings appear only in t
 
 **Motion:** Soften, Hold, Settle, Boil, Boil spread, Boil linger.
 
-**Ink only:** Ink color (Cell / Green / Amber / White / Custom + color picker), Background (Black / Tint), Ink lightness (0.5–1.0, default 0.92), Saturation (0.5–2.0, default 1.4), Gamma (0.5–1.5, default 0.85), Shape (0–1, default 0.35), Levels (Auto / Manual), Adapt speed, Black point, White point.
+**Ink only:** Ink color (Cell / Green / Amber / White / Custom + color picker, shown for Custom), Background (Black / Tint), Ink lightness (0.5–1.0, default 0.92), Saturation (0.5–2.0, default 1.4), Gamma (0.5–1.5, default 0.85), Shape (0–1, default 0.35), Levels (Auto / Manual), Adapt speed (shown for Auto), Black point and White point (shown for Manual).
 
 **Poster only:** Levels (2–16, default 6).
 
-**Console only:** Palette (VGA / Custom), 16 color pickers (shown for Custom), **Capture palette** button.
+**Console only:** Palette (VGA / Custom), **Capture palette** button, a note on what capture does, 16 color pickers (shown for Custom; they start as the VGA colors).
 
-**Capture palette** reads back one downscaled frame (about 160×90) from the filter's input through a `gs_stagesurface` and runs on a worker thread. It runs k-means in OKLab (k = 16, fixed seed, best of 3 starts, 30 iterations), orders the colors by pixel count with slots 0–7 the most common, writes them into the 16 color pickers, and sets Palette to Custom. The result is saved with the scene like any other setting.
+**Capture palette** reads back one downscaled frame (about 160×90, from the Sample pass output, so the grid's area at the cell scale) through a `gs_stagesurface`, and runs k-means on a worker thread over its pixels with alpha ≥ 0.5 (all pixels if none). k-means runs in OKLab: k = 16, k-means++ seeding from a fixed seed (splitmix64), the best of 3 starts by total squared distance, 30 iterations each; an empty cluster takes the point farthest from its center. It orders the colors by pixel count with slots 0–7 the most common, writes them (rounded to 8-bit sRGB) into the 16 color pickers, and sets Palette and the Look to Custom. The result is saved with the scene like any other setting.
 
 The VGA palette is the standard 16-color text-mode palette, ordered so slots 0–7 are the eight normal-intensity colors.
 
@@ -204,7 +210,7 @@ The ranges above are starting points. Phase 4 trims each one to the span where e
 
 ## Looks
 
-Starting values; Phase 4 tunes the defaults and records before/after stills in `docs/LOOKS.md`. Unlisted settings keep the defaults above. Soften defaults to 0.6 px and Settle to 0 unless noted.
+Starting values; Phase 4 tunes the defaults and records before/after stills in `docs/LOOKS.md`. Unlisted settings keep the defaults above. Soften defaults to 0.6 px, Settle to 0, Boil to 0, Boil spread to 20 and Boil linger to 2 unless noted.
 
 | Filter | Look | Characters | Settings |
 | --- | --- | --- | --- |
@@ -269,7 +275,7 @@ A debug build of the plugin (CMake option `GLYPHNOTIC_DEBUG_TOOLS`) adds a **Dum
 
 ## Build phases and acceptance
 
-Each phase ends with a report in `docs/build-history/phase-N.md` covering what was built, how it was tested, measurements, and deviations from this spec with reasons. Then the spec is updated and the phase's boxes are ticked.
+Each phase ends with a report in `docs/build-history/phase-N.md` covering what was built, how it was tested, measurements, and deviations from this spec with reasons. Then the spec is updated and the phase's boxes are ticked. From Phase 3 on, every phase also ends with the Linux check (`tools/linux-check/`, steps in `tools/README.md`): OBS 33 under `xvfb-run` in an Ubuntu 26.04 container, with each Glyphnotic filter on an image source, must log no errors and 0 memory leaks. After a phase is approved it is committed and pushed, and CI must be green before the next phase starts.
 
 **Phase 0: scaffold**
 - [x] Repository created from `obsproject/obs-plugintemplate`; CI builds Windows, Linux and macOS packages (Windows and Linux green on every push to `main`; macOS builds only on tags and manual runs, by decision at the Phase 0 review)
@@ -283,9 +289,9 @@ Each phase ends with a report in `docs/build-history/phase-N.md` covering what w
 - [x] Reference match: on the test stills with motion off, ≥ 99% of cells match the reference; every mismatch has a cost gap under 1e-4 (measured: 100% of cells in all 25 cases, on Direct3D 11 and OpenGL)
 
 **Phase 2: Ink, Poster, Console**
-- [ ] All four filters with their settings; Auto and Manual levels; VGA and custom palettes; Capture palette
-- [ ] Reference match as in Phase 1, for each mode and character set
-- [ ] All looks from Looks are present and apply
+- [x] All four filters with their settings; Auto and Manual levels; VGA and custom palettes; Capture palette
+- [x] Reference match as in Phase 1, for each mode and character set (measured: 66 cases over all four modes and all five sets, 442,116 cells; ≥ 99.97% of cells match in every case and 100% in 60 cases; the 6 mismatched cells all have cost gaps under 1e-8; the same on Direct3D 11 and OpenGL)
+- [x] All looks from Looks are present and apply (measured: all 10 looks, applied from settings and from the properties window, each picture matching the reference)
 
 **Phase 3: motion**
 - [ ] Soften, Hold, Settle, Boil, Boil spread, Boil linger, Light jump

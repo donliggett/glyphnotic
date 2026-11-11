@@ -152,4 +152,6 @@ debug build. [tools/README.md](../tools/README.md) has the commands.
 
 CI checks C/C++ with clang-format 19 and CMake files with gersemi, using
 `.clang-format` and `.gersemirc`. The versions are those in OBS's Homebrew
-tap: clang-format 19 and gersemi 0.21.0.
+tap: clang-format 19.1.7 and gersemi 0.21.0. Both are pinned in
+`tools/reference/requirements.txt` and installed in the repository's `.venv`;
+[tools/README.md](../tools/README.md#formatting) has the commands.

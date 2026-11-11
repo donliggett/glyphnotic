@@ -32,6 +32,11 @@ add_executable(grid-test grid-test.cpp)
 target_include_directories(grid-test PRIVATE "${GLYPHNOTIC_ROOT}/src")
 target_compile_options(grid-test PRIVATE ${warning_flags})
 
+add_executable(palette-test palette-test.cpp "${GLYPHNOTIC_ROOT}/src/palette.cpp" "${GLYPHNOTIC_ROOT}/src/presets.cpp")
+target_include_directories(palette-test PRIVATE "${GLYPHNOTIC_ROOT}/src")
+target_compile_options(palette-test PRIVATE ${warning_flags})
+
 enable_testing()
 add_test(NAME font-test COMMAND font-test)
 add_test(NAME grid-test COMMAND grid-test)
+add_test(NAME palette-test COMMAND palette-test)
