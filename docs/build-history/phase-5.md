@@ -17,8 +17,20 @@ Date: 2026-11-11. Plugin version 1.0.0. Built against OBS Studio 33.0.1.
 tag so 1.0.0's source and packages carry it: the root `LICENSE` (GPL
 version 2 text), installed with the plugin's data in every package; an SPDX
 header and copyright line on Glyphnotic's own source and effect files; the
-README's and spec's licensing sections. What's left: tag `v1.0.0`, push the
-tag, check the draft release CI makes; waiting for the go-ahead.
+README's and spec's licensing sections. Also before the tag: the logo
+(`docs/images/glyphnotic-logo.svg`, with a white background so it reads on
+dark themes) and a Ko-fi link in the README and `.github/FUNDING.yml`.
+
+**Released:** commit `38c8674` (CI green, every package carrying
+`LICENSE`) was tagged `v1.0.0`. The tag's run (43162285670) built every
+platform in the Release configuration and created the draft release
+"Glyphnotic 1.0.0" with seven files: the Windows installer and zip, the
+Linux .deb, debug symbols and tarball, the macOS .pkg and the source
+tarball, each checksum in the notes matching the downloaded file. The
+release's zip, installed in place of the test install, ran three ASCII
+instances at 1080p60 with no lagged or skipped frames and 400 filters added
+and removed with 0 leaks; its .deb and tarball passed all 27 Linux install
+checks. It stays a draft until it's published.
 
 ## What was built
 

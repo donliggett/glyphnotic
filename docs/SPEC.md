@@ -320,7 +320,7 @@ A builder starting a phase first reads `docs/BUILDER-NOTES.md`, the previous pha
 - [x] Adding and removing a filter 100 times leaves "Number of memory leaks: 0" in the OBS log at exit (measured: 100 times through OBS's Filters window, and 400 through the API)
 - [x] Settings survive an OBS restart; instances on different sources stay independent (measured: three filters' settings, a captured palette included, identical after a restart and each picture pixel-identical; changing one changes only its own source)
 - [x] Windows installer and zip, Linux .deb and tarball, macOS .pkg from CI; install and uninstall tested on Windows and Linux by following Install exactly (measured: every package from CI on commit `a755cc5`; CI's installer, zip, .deb and tarball installed, loaded in OBS, uninstalled cleanly, with OBS keeping the filters' settings; the macOS .pkg built, not tested)
-- [ ] `README.md` and `docs/INSTALL.md` final; `v1.0.0` tagged with a GitHub Release (README and INSTALL final, version 1.0.0, licensed GPL-2.0-or-later; left: the tag and the release)
+- [x] `README.md` and `docs/INSTALL.md` final; `v1.0.0` tagged with a GitHub Release (tagged on commit `38c8674`; CI's Release build made the GitHub Release "Glyphnotic 1.0.0" with all seven files and their SHA-256 checksums, as a draft until it's published; its Windows zip and Linux .deb and tarball passed the install and OBS tests again)
 
 ## Test assets
 
@@ -340,7 +340,7 @@ Only releases that have been cleared get a version number. Everything else is an
 
 | Release | Scope | Status |
 | --- | --- | --- |
-| v1.0 | Four filters, ten looks, motion controls, Windows and Linux packages | Next |
+| v1.0 | Four filters, ten looks, motion controls, Windows and Linux packages | Tagged `v1.0.0` (2026-11-11); release drafted |
 
 **Ideas, not scheduled**
 
