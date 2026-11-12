@@ -1,6 +1,6 @@
 # Builder notes
 
-How Glyphnotic is built and tested in practice, from Phases 0–3. Commands
+How Glyphnotic is built and tested in practice, from Phases 0–4. Commands
 over prose; the why is in `docs/build-history/`.
 
 ## Standing rules
@@ -96,11 +96,14 @@ repository's `data\`, so shader edits need no rebuild; don't rebuild
 | Ink levels over time | `... run_levels.py --build ..\..\build_dbg\RelWithDebInfo` (same for OpenGL) | <1 min |
 | Color paths | `... run_color_paths.py --build ..\..\build_dbg\RelWithDebInfo` | ~1 min |
 | Motion over time | `... run_motion.py --build ..\..\build_dbg\RelWithDebInfo` (add `--renderer opengl --out ..\..\build_motion_gl`) | ~11 min |
+| Tuning measurements (Phase 4; not pass/fail) | `... run_tuning.py --build ..\..\build_dbg\RelWithDebInfo` (suites hold, noise, boil, ranges, looks) | ~15 min |
 
 One case: `run_stills.py ... --only ink-victor`; some motion suites:
 `run_motion.py ... --only boil,jump` (suites: source, flicker, still, boil,
 jump, hold, settle; `--flicker-frames 150` for a quick flicker run). Every
-suite exits 0 when all pass and must pass on both renderers. The two
+suite exits 0 when all pass and must pass on both renderers
+(`run_tuning.py` only measures; after changing a look, redraw
+`docs/looks/` with `run_tuning.py ... --only looks`, 1 min). The two
 renderers' chains can run at the same time with separate `--out` folders
 (about 40 minutes each, all suites). Harness options, the dump and the
 recording format: `tools/README.md`.
@@ -211,3 +214,18 @@ gh run watch <run id> --exit-status
 - **Light jump needs a big change:** halving victor's encoded values changes
   only 46% of cells by more than 0.12 (no jump); 0.3× or a different still
   (a crop of sintel: 69%) is one.
+- **Sweeping a static setting needs no OBS**: the reference matches the
+  plugin on a fresh pick, so `tuning.py` draws its pictures (contact
+  sheets, crops) in seconds. Only motion (Hold, Boil, Settle) needs the
+  harness.
+- **Glyph-change counts mislead in Ink**: ASCII has so many near-ties that
+  a Gamma step of 0.1 changes 80% of glyphs while the tone barely moves.
+  Measure tone (space and densest-glyph shares), fit or drawn color.
+- **Cost-range shares don't compare across modes** (Ink's ranges are set
+  by the extreme glyphs, Mosaic's next-best glyph sits near the worst):
+  compare modes by glyph changes per frame or by the picture.
+- **σ 2/255 noise is a quiet camera.** At σ 4/255 Hold 10 lets 0.4–5% of
+  cells change per frame; the looks use Hold 25 (Phase 4).
+- **Slider ranges are UI only** (`src/settings.hpp`): scene files and
+  scripts may set wider values; only motion settings and Poster's Levels
+  are clamped. `run_looks.py` checks the ranges against the spec.

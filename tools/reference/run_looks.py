@@ -50,15 +50,20 @@ LOOKS = {
         ("static", ink_look("ascii", "green", "black", 25, boil=15, boil_spread=20, boil_linger=2)),
         ("fever", ink_look("ascii", "cell", "tint", 10, boil=45, boil_spread=35, boil_linger=1, settle=30)),
     ],
-    "mosaic": [("blocks", dict(MOTION, charset="blocks", hold=10))],
-    "poster": [("poster", dict(MOTION, charset="lines", poster_levels=6, hold=10))],
-    "console": [("console", dict(MOTION, charset="lines", palette="vga", hold=10))],
+    "mosaic": [("blocks", dict(MOTION, charset="blocks", hold=25))],
+    "poster": [("poster", dict(MOTION, charset="lines", poster_levels=6, hold=25))],
+    "console": [("console", dict(MOTION, charset="lines", palette="vga", hold=25))],
 }
 
 # A setting each filter's looks control, with a value no look uses.
 CONTROLLED_CHANGE = {"ink": {"gamma": 1.2}, "mosaic": {"charset": "ascii"}, "poster": {"poster_levels": 3},
                      "console": {"palette": "custom"}}
 MOTION_PROPS = {"soften", "hold", "settle", "boil", "boil_spread", "boil_linger"}
+# The sliders' ranges (docs/SPEC.md, Motion and Filters and settings; trimmed in Phase 4).
+RANGES = {"soften": (0.0, 2.0), "hold": (0, 100), "settle": (0, 95), "boil": (0, 100), "boil_spread": (0, 100),
+          "boil_linger": (1, 12), "ink_lightness": (0.5, 1.0), "saturation": (0.5, 2.0), "gamma": (0.7, 1.6),
+          "shape": (0.0, 0.6), "adapt_speed": (0.2, 5.0), "black_point": (0.0, 0.6), "white_point": (0.2, 1.0),
+          "poster_levels": (2, 12)}
 MODE_PROPS = {"ink": {"ink_color", "ink_custom_color", "ink_background", "ink_lightness", "saturation", "gamma",
                       "shape", "ink_levels", "adapt_speed", "black_point", "white_point"},
               "poster": {"poster_levels"},
@@ -152,6 +157,11 @@ def main():
             r.check(not props["custom_chars"]["visible"], "%s: Custom characters hidden" % mode)
             for n in sorted(MOTION_PROPS):
                 r.check(n in props and props[n]["visible"], "%s: Motion's %s shown" % (mode, n))
+            for n, (lo, hi) in RANGES.items():
+                if n in props:
+                    got = (props[n].get("min"), props[n].get("max"))
+                    r.check(got[0] is not None and abs(got[0] - lo) < 1e-9 and abs(got[1] - hi) < 1e-9,
+                            "%s: %s ranges %g-%g (got %s)" % (mode, n, lo, hi, got))
             if mode == "ink":
                 r.check(not props["ink_custom_color"]["visible"], "ink: custom ink hidden for Cell")
                 r.check(props["adapt_speed"]["visible"], "ink: Adapt speed shown for Auto")

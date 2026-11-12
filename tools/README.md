@@ -11,6 +11,8 @@ Test tools for Glyphnotic. None of this ships with the plugin.
 | `reference/run_looks.py` | Checks the looks (present, applied from settings and from the properties window, Custom on change) and which properties each filter shows |
 | `reference/run_levels.py` | Checks Ink's Auto levels over time (easing, snapping on a size change and a light jump) and Manual levels |
 | `reference/run_motion.py` | Checks the motion settings over time: flicker under noise for every look, Boil 0 on a still, Boil's rate, linger and spread, Light jump, Hold against the reference's costs, Settle |
+| `reference/run_tuning.py` | Phase 4's tuning measurements: Hold on a still and a panning still under noise, the looks under heavier noise, Boil spread's cost ranges, the static sliders' sweeps; and draws the stills in `docs/LOOKS.md` |
+| `reference/tuning.py` | Helpers for `run_tuning.py`: a fresh pick drawn from the reference, crops, contact sheets |
 | `reference/run_color_paths.py` | Checks colors along OBS's other color paths: Color Correction before and after, 10-bit and HDR canvases, 16-bit and HDR sources |
 | `reference/make_stills.py` | Rebuilds `tests/stills/` (see `tests/stills/ATTRIBUTION.md`) |
 | `reference/imageio_min.py` | PNG/PAM/BMP reading and PNG writing with only NumPy |
@@ -81,7 +83,10 @@ Reference comparison, from `tools\reference`:
 The second command runs OBS's OpenGL renderer on Windows, which checks the
 effects' GLSL translation without a Linux machine. `run_looks.py`,
 `run_levels.py` and `run_motion.py` take `--renderer opengl` too (with
-`--out` set to a folder of their own). `run_motion.py` takes about 11
+`--out` set to a folder of their own). `run_tuning.py` measures for tuning rather than checks (its suites:
+`hold` ~8 min, `noise` ~3 min, `boil` and `ranges` ~3 min without OBS,
+`looks` ~1 min, which writes `docs/looks/`); `--only looks` after a change
+to a look. `run_motion.py` takes about 11
 minutes, most of it the flicker suite (20 runs of 600 frames at 30 fps);
 `--only boil,jump` runs some of its suites, and `--flicker-frames 150` a
 shorter flicker test.
@@ -275,7 +280,7 @@ effect changes need no rebuild.
   `capture_palette`). Either then waits `--wait-frames` frames (default 10).
 - `--settings-out` writes the filter's settings, defaults included, as
   JSON; `--properties-out` writes its properties (name, type, visibility,
-  list items, groups nested).
+  list items, sliders' `min`, `max` and `step`, groups nested).
 - `--then-image` switches the image source to another PNG after the first
   dump, runs `--then-frames` frames and presses Dump grid again into
   `--dump2` (`run_levels.py` uses it).

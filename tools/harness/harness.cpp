@@ -777,6 +777,17 @@ void properties_json(obs_properties_t *props, std::string &out)
 			}
 			out += "]";
 		}
+		if (obs_property_get_type(p) == OBS_PROPERTY_FLOAT) {
+			char range[96];
+			snprintf(range, sizeof(range), ",\"min\":%.9g,\"max\":%.9g,\"step\":%.9g",
+				 obs_property_float_min(p), obs_property_float_max(p), obs_property_float_step(p));
+			out += range;
+		}
+		if (obs_property_get_type(p) == OBS_PROPERTY_INT) {
+			out += ",\"min\":" + std::to_string(obs_property_int_min(p)) +
+			       ",\"max\":" + std::to_string(obs_property_int_max(p)) +
+			       ",\"step\":" + std::to_string(obs_property_int_step(p));
+		}
 		if (obs_property_get_type(p) == OBS_PROPERTY_GROUP) {
 			out += ",\"content\":";
 			properties_json(obs_property_group_content(p), out);

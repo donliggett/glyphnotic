@@ -69,6 +69,7 @@ docs/
   SPEC.md, BUILDING.md, INSTALL.md, LOOKS.md, PERFORMANCE.md
   BUILDER-NOTES.md     how the builder works: shell, commands, test suites, OBS and Linux checks, standing rules
   build-history/       one report per build phase
+  looks/               the stills in LOOKS.md
   licenses/            license texts of bundled third-party material
 ```
 
@@ -148,7 +149,7 @@ Ink colors:
 **Levels** (Ink only):
 
 - **Auto** (default): each frame, take the mean `μ` and standard deviation `σ` (population) of the raw mean lightness of the cells drawn opaque (all cells when Keep transparency is off); the target is `lo = μ − 2σ`, `hi = μ + 2σ`, each clamped to [0, 1]. If then `hi − lo < 0.05`, both move to 0.025 either side of their midpoint, and back inside [0, 1] if that crosses an end (`lo = 0, hi = 0.05` or `lo = 0.95, hi = 1`). With no opaque cells, `μ = 0.5, σ = 0`. The live `lo`/`hi` ease toward the target with time constant **Adapt speed** (0.2–5 s, default 1.5 s), like a camera's auto exposure: `lo += (target − lo) × (1 − e^(−dt / adapt speed))`, with `dt` the time since the last frame. They snap on the first frame, when the grid resets (see Render passes) and on a Light jump.
-- **Manual:** **Black point** and **White point** sliders (0–1, defaults 0 and 1) set `lo = black point` and `hi = max(white point, black point + 0.05)`.
+- **Manual:** **Black point** (0–0.6) and **White point** (0.2–1) sliders (defaults 0 and 1) set `lo = black point` and `hi = max(white point, black point + 0.05)`.
 
 ## Motion
 
@@ -157,7 +158,7 @@ These settings shape how the grid changes from frame to frame. They apply to all
 | Setting | Range (UI) | What it does |
 | --- | --- | --- |
 | **Soften** | 0–2 px | Gaussian blur (σ in source pixels) on the source before sampling. Removes sensor noise at its source without holding back real motion. |
-| **Hold** | 0–100 | A cell keeps its previous glyph unless the best glyph's cost is lower by more than the threshold. 0 = no hold; 100 = almost locked. Internally `threshold = Hold / 100 × K_mode`; `K_mode` is set per mode so that 100 means "almost locked" in every mode (provisional values below; Phase 4 tunes them). |
+| **Hold** | 0–100 | A cell keeps its previous glyph unless the best glyph's cost is lower by more than the threshold. 0 = no hold; 100 = almost locked. Internally `threshold = Hold / 100 × K_mode`; `K_mode` is set per mode so that 100 means "almost locked" in every mode (values below). |
 | **Settle** | 0–95% | Each cell's text and background colors blend with the previous frame's: `c = c_new + (c_prev − c_new) × Settle`, in OKLab. Calms color flicker separately from glyph changes. |
 | **Boil** | 0–100 | Deliberate, image-independent glyph swaps. The rate at which a cell that isn't already swapping starts a swap: 0 → never, 100 → 4 swaps per cell per second. It's converted to a per-frame chance `p = 1 − e^(−r·dt)` (`r` the rate, `dt` the frame interval of OBS's configured frame rate), so the look is the same at 30 and 60 fps. |
 | **Boil spread** | 0–100 | How far a swap may stray from the best glyph: a swapping cell picks uniformly among the glyphs other than its held glyph whose cost is within `spread × (worst − best)` of the best (UI 100 maps to 0.5); if there are none, it shows its held glyph for the swap. Low spread keeps the image readable; high spread turns into static. |
@@ -167,7 +168,7 @@ These settings shape how the grid changes from frame to frame. They apply to all
 
 **Hold and Boil don't interact.** Each cell stores its *held* glyph, the image-driven choice that Hold compares against, separately from its *shown* glyph. A boiled glyph is shown for its linger and then dropped; it never becomes the held glyph, so boiling can't pile up under a high Hold.
 
-**Hold** keeps the held glyph when `cost(held) − cost(best) ≤ threshold`, else takes the best (the lowest index among ties). At Hold 0 the held glyph is always the best. Provisional `K_mode` (Phase 3: 10× the threshold at which fresh noise of σ = 2/255 on `victor.png`, with the mode's first look, changes fewer than 0.1% of cells per frame, so Hold 10 holds against sensor noise): Ink 0.003, Mosaic 0.000025, Poster 0.00015, Console 0.0015. The modes' costs differ by orders of magnitude, and Poster's Lines set flickers more under noise than Mosaic's Blocks.
+**Hold** keeps the held glyph when `cost(held) − cost(best) ≤ threshold`, else takes the best (the lowest index among ties). At Hold 0 the held glyph is always the best. `K_mode`: Ink 0.003, Mosaic 0.000025, Poster 0.00015, Console 0.0015. Each is 10× the threshold at which fresh noise of σ = 2/255 on `victor.png`, with the mode's first look, changes fewer than 0.1% of cells per frame, so Hold 10 holds against sensor noise (Phase 3); on `victor.png` panning 1 px per frame with that noise, Hold 100 changes 5–14% as many cells per frame as Hold 0 in every mode, and 10–24% on a 4 px per frame pan, so it's almost locked for small movements and still follows big ones (Phase 4). The modes' costs differ by orders of magnitude, and Poster's Lines set flickers more under noise than Mosaic's Blocks.
 
 **Light jump.** If at least 50% of all cells change raw mean lightness by more than 0.12 from the previous frame, the frame counts as a light jump: every cell picks fresh (Hold is ignored for one frame), Settle restarts, Auto levels snap, and active boils end, with no new swap starting that frame. This covers scene switches and lights turning on. The first frame of a grid (a new filter, or after a reset; see Render passes) is fresh in the same way, without counting as a light jump.
 
@@ -202,9 +203,9 @@ All four filters share the groups below; mode-specific settings appear only in t
 
 **Motion:** Soften, Hold, Settle, Boil, Boil spread, Boil linger.
 
-**Ink only:** Ink color (Cell / Green / Amber / White / Custom + color picker, shown for Custom), Background (Black / Tint), Ink lightness (0.5–1.0, default 0.92), Saturation (0.5–2.0, default 1.4), Gamma (0.5–1.5, default 0.85), Shape (0–1, default 0.35), Levels (Auto / Manual), Adapt speed (shown for Auto), Black point and White point (shown for Manual).
+**Ink only:** Ink color (Cell / Green / Amber / White / Custom + color picker, shown for Custom), Background (Black / Tint), Ink lightness (0.5–1.0, default 0.92), Saturation (0.5–2.0, default 1.4), Gamma (0.7–1.6, default 0.85), Shape (0–0.6, default 0.35), Levels (Auto / Manual), Adapt speed (0.2–5 s, default 1.5 s; shown for Auto), Black point (0–0.6, default 0) and White point (0.2–1.0, default 1) (shown for Manual).
 
-**Poster only:** Levels (2–16, default 6).
+**Poster only:** Levels (2–12, default 6).
 
 **Console only:** Palette (VGA / Custom), **Capture palette** button, a note on what capture does, 16 color pickers (shown for Custom; they start as the VGA colors).
 
@@ -212,11 +213,11 @@ All four filters share the groups below; mode-specific settings appear only in t
 
 The VGA palette is the standard 16-color text-mode palette, ordered so slots 0–7 are the eight normal-intensity colors.
 
-The ranges above are starting points. Phase 4 trims each one to the span where every position looks deliberate.
+The ranges above are the properties window's; Phase 4 trimmed them to the span where every position looks deliberate (`docs/build-history/phase-4.md` has the measurements). A value set outside them by a scene file or a script is used as before: the filter clamps only the motion settings (to the ranges in Motion) and Poster's Levels (to 2–16).
 
 ## Looks
 
-Starting values; Phase 4 tunes the defaults and records before/after stills in `docs/LOOKS.md`. Unlisted settings keep the defaults above. Soften defaults to 0.6 px, Settle to 0, Boil to 0, Boil spread to 20 and Boil linger to 2 unless noted.
+Final values from Phase 4; `docs/LOOKS.md` shows each look on three test stills, with before and after stills for the looks Phase 4 changed. Unlisted settings keep the defaults above. Soften defaults to 0.6 px, Hold to 25, Settle to 0, Boil to 0, Boil spread to 20 and Boil linger to 2 unless noted.
 
 | Filter | Look | Characters | Settings |
 | --- | --- | --- | --- |
@@ -227,9 +228,9 @@ Starting values; Phase 4 tunes the defaults and records before/after stills in `
 | Ink | **Every Glyph** | Every glyph | Cell ink, black background, Hold 25 |
 | Ink | **Static** | ASCII | Green ink, black background, Hold 25, Boil 15, spread 20, linger 2 |
 | Ink | **Fever** | ASCII | Cell ink, tint background, Hold 10, Boil 45, spread 35, linger 1, Settle 30% |
-| Mosaic | **Blocks** | Blocks | Hold 10 |
-| Poster | **Poster** | Lines | Levels 6, Hold 10 |
-| Console | **Console** | Lines | VGA palette, Hold 10 |
+| Mosaic | **Blocks** | Blocks | Hold 25 |
+| Poster | **Poster** | Lines | Levels 6, Hold 25 |
+| Console | **Console** | Lines | VGA palette, Hold 25 |
 
 ## Install
 
@@ -306,9 +307,9 @@ A builder starting a phase first reads `docs/BUILDER-NOTES.md`, the previous pha
 - [x] Boil 0: two consecutive frames of a still are identical. Boil > 0: the measured swap rate is within ±20% of the setting. A swapped cell returns to its held glyph after its linger, even at Hold 100 (measured: every look's frames identical at Boil 0; 10 cases at 30 and 60 fps within 1.4% of the set rate; every swap lasts exactly its linger, held glyphs unchanged at Hold 10–100; the same on Direct3D 11 and OpenGL. Linux check passed: OBS 33 on Mesa llvmpipe with Ink Static and Fever, no errors, 0 leaks)
 
 **Phase 4: tuning**
-- [ ] `K_mode` set for each mode, and every slider range trimmed to the span that looks deliberate
-- [ ] Final look defaults; `docs/LOOKS.md` with a still of each look on at least three test stills
-- [ ] Ranges, defaults and `K_mode` values written back into this spec
+- [x] `K_mode` set for each mode, and every slider range trimmed to the span that looks deliberate (measured: Phase 3's `K_mode` confirmed on a panning still with noise, where Hold 100 changes 5–14% as many cells per frame as Hold 0 on a 1 px pan and 10–24% on a 4 px pan in every mode; Gamma, Shape, Black point, White point and Poster's Levels trimmed, the other sliders measured and kept)
+- [x] Final look defaults; `docs/LOOKS.md` with a still of each look on at least three test stills (Blocks, Poster and Console at Hold 25: at σ 4/255 noise every look changes ≤ 0.14% of cells per frame; all 10 looks on victor, spring and sintel, drawn by the plugin)
+- [x] Ranges, defaults and `K_mode` values written back into this spec (every suite passes on Direct3D 11 and OpenGL with them. Linux check passed: OBS 33 on Mesa llvmpipe, no errors, 0 leaks)
 
 **Phase 5: performance, packaging, release**
 - [ ] `docs/PERFORMANCE.md`: GPU time per look at 1920×1080, measured with libobs GPU timer queries (or OBS's render-time stat with and without the filter), with the test GPU named

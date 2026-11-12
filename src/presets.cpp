@@ -1,5 +1,5 @@
-// Glyphnotic: the looks. Starting values from docs/SPEC.md, Looks; Phase 4
-// tunes them.
+// Glyphnotic: the looks (docs/SPEC.md, Looks; final values from Phase 4's
+// tuning, docs/LOOKS.md).
 
 #include "presets.hpp"
 
@@ -86,14 +86,13 @@ std::vector<Look> build(Mode mode)
 			      num(key::kBoilSpread, 35), num(key::kBoilLinger, 1), num(key::kSettle, 30)}),
 		};
 	case Mode::Mosaic:
-		return {make(mode, "blocks", "Glyphnotic.Look.Blocks",
-			     {str(key::kCharset, "blocks"), num(key::kHold, 10)})};
+		return {make(mode, "blocks", "Glyphnotic.Look.Blocks", {str(key::kCharset, "blocks")})};
 	case Mode::Poster:
 		return {make(mode, "poster", "Glyphnotic.Look.Poster",
-			     {str(key::kCharset, "lines"), num(key::kPosterLevels, 6), num(key::kHold, 10)})};
+			     {str(key::kCharset, "lines"), num(key::kPosterLevels, 6)})};
 	case Mode::Console:
 		return {make(mode, "console", "Glyphnotic.Look.Console",
-			     {str(key::kCharset, "lines"), str(key::kPalette, "vga"), num(key::kHold, 10)})};
+			     {str(key::kCharset, "lines"), str(key::kPalette, "vga")})};
 	}
 	return {};
 }

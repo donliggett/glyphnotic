@@ -11,11 +11,12 @@
 namespace glyphnotic {
 
 // Hold's K_mode: threshold = Hold / 100 * K_mode, in the mode's cost units,
-// which differ by orders of magnitude between modes. Provisional values from
-// Phase 3's flicker test: 10x the threshold at which fresh noise (sigma
-// 2/255) on victor.png, with the mode's first look, changes fewer than 0.1% of
-// cells per frame, so Hold 10 holds against sensor noise and Hold 100 is
-// almost locked. Phase 4 tunes them.
+// which differ by orders of magnitude between modes. Set in Phase 3 as 10x the
+// threshold at which fresh noise (sigma 2/255) on victor.png, with the mode's
+// first look, changes fewer than 0.1% of cells per frame, so Hold 10 holds
+// against sensor noise; confirmed in Phase 4 on a panning still: at Hold 100
+// every mode changes 5-14% as many cells per frame as at Hold 0 on a 1 px per
+// frame pan, and 10-24% on a 4 px pan (docs/build-history/phase-4.md).
 constexpr double kHoldScale[kModeCount] = {
 	0.003,    // Ink (ASCII)
 	0.000025, // Mosaic (Blocks)

@@ -413,16 +413,16 @@ void add_properties(obs_properties_t *props, TypeData *td, obs_property_clicked_
 		obs_property_list_add_string(bg, obs_module_text("Glyphnotic.InkBackground.Tint"), "tint");
 		watch(add_slider(ink, key::kInkLightness, "Glyphnotic.InkLightness", 0.5, 1.0, 0.01));
 		watch(add_slider(ink, key::kSaturation, "Glyphnotic.Saturation", 0.5, 2.0, 0.05));
-		watch(add_slider(ink, key::kGamma, "Glyphnotic.Gamma", 0.5, 1.5, 0.01));
-		watch(add_slider(ink, key::kShape, "Glyphnotic.Shape", 0.0, 1.0, 0.01));
+		watch(add_slider(ink, key::kGamma, "Glyphnotic.Gamma", kGammaMin, kGammaMax, 0.01));
+		watch(add_slider(ink, key::kShape, "Glyphnotic.Shape", 0.0, kShapeMax, 0.01));
 		obs_property_t *levels = watch(add_list(ink, key::kInkLevels, "Glyphnotic.InkLevels"));
 		obs_property_list_add_string(levels, obs_module_text("Glyphnotic.InkLevels.Auto"), "auto");
 		obs_property_list_add_string(levels, obs_module_text("Glyphnotic.InkLevels.Manual"), "manual");
 		obs_property_t *adapt =
 			watch(add_slider(ink, key::kAdaptSpeed, "Glyphnotic.AdaptSpeed", 0.2, 5.0, 0.1));
 		obs_property_float_set_suffix(adapt, " s");
-		watch(add_slider(ink, key::kBlackPoint, "Glyphnotic.BlackPoint", 0.0, 1.0, 0.01));
-		watch(add_slider(ink, key::kWhitePoint, "Glyphnotic.WhitePoint", 0.0, 1.0, 0.01));
+		watch(add_slider(ink, key::kBlackPoint, "Glyphnotic.BlackPoint", 0.0, kBlackPointMax, 0.01));
+		watch(add_slider(ink, key::kWhitePoint, "Glyphnotic.WhitePoint", kWhitePointMin, 1.0, 0.01));
 		obs_properties_add_group(props, "group_ink", obs_module_text("Glyphnotic.Group.Ink"), OBS_GROUP_NORMAL,
 					 ink);
 	}
@@ -430,7 +430,8 @@ void add_properties(obs_properties_t *props, TypeData *td, obs_property_clicked_
 	if (td->mode == Mode::Poster) {
 		obs_properties_t *poster = obs_properties_create();
 		watch(obs_properties_add_int_slider(poster, key::kPosterLevels,
-						    obs_module_text("Glyphnotic.PosterLevels"), 2, 16, 1));
+						    obs_module_text("Glyphnotic.PosterLevels"), 2, kPosterLevelsMax,
+						    1));
 		obs_properties_add_group(props, "group_poster", obs_module_text("Glyphnotic.Group.Poster"),
 					 OBS_GROUP_NORMAL, poster);
 	}

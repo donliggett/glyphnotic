@@ -51,6 +51,17 @@ constexpr const char *kLookCustom = "custom";
 
 constexpr double kMaxSoften = 2.0; // px
 
+// Slider ranges trimmed in Phase 4 to the span where every position looks
+// deliberate (docs/build-history/phase-4.md has the measurements). They bound
+// the properties window only; values from a scene file or a script keep the
+// wider limits the filter has always accepted.
+constexpr double kGammaMin = 0.7;
+constexpr double kGammaMax = 1.6;
+constexpr double kShapeMax = 0.6;
+constexpr double kBlackPointMax = 0.6;
+constexpr double kWhitePointMin = 0.2;
+constexpr int kPosterLevelsMax = 12;
+
 enum class InkColor { Cell = 0, Green, Amber, White, Custom };
 
 // Settings the render thread reads, resolved from the source settings.
