@@ -3,7 +3,8 @@ param(
     [ValidateSet('x64')]
     [string] $Target = 'x64',
     [ValidateSet('Debug', 'RelWithDebInfo', 'Release', 'MinSizeRel')]
-    [string] $Configuration = 'RelWithDebInfo'
+    [string] $Configuration = 'RelWithDebInfo',
+    [switch] $BuildInstaller
 )
 
 $ErrorActionPreference = 'Stop'
@@ -53,6 +54,7 @@ function Package {
         ErrorAction = 'SilentlyContinue'
         Path = @(
             "${ProjectRoot}/release/${ProductName}-*-windows-*.zip"
+            "${ProjectRoot}/release/${ProductName}-*-windows-*-installer.exe"
         )
     }
 
@@ -67,6 +69,36 @@ function Package {
     }
     Compress-Archive -Force @CompressArgs
     Log-Group
+
+    if ( $BuildInstaller ) {
+        # Inno Setup 6: cmake/windows/resources/installer-Windows.iss
+        $Iscc = (Get-Command iscc -ErrorAction SilentlyContinue).Source
+        if ( ! $Iscc ) {
+            $Iscc = @(
+                "${env:ProgramFiles(x86)}/Inno Setup 6/ISCC.exe"
+                "${env:ProgramFiles}/Inno Setup 6/ISCC.exe"
+                "${env:LOCALAPPDATA}/Programs/Inno Setup 6/ISCC.exe"
+            ) | Where-Object { Test-Path $_ } | Select-Object -First 1
+        }
+        if ( ! $Iscc ) {
+            throw 'Inno Setup 6 (ISCC.exe) not found; it builds the Windows installer.'
+        }
+
+        Log-Group "Building the installer for ${ProductName}..."
+        $IsccArgs = @(
+            "/DProductName=${ProductName}"
+            "/DDisplayName=$($BuildSpec.displayName)"
+            "/DProductVersion=${ProductVersion}"
+            "/DAuthor=$($BuildSpec.author)"
+            "/DWebsite=$($BuildSpec.website)"
+            "/DSourceDir=$(Resolve-Path "${ProjectRoot}/release/${Configuration}")"
+            "/DOutputDir=$(Resolve-Path "${ProjectRoot}/release")"
+            "/DOutputBaseFilename=${OutputName}-installer"
+            "${ProjectRoot}/cmake/windows/resources/installer-Windows.iss"
+        )
+        Invoke-External $Iscc @IsccArgs
+        Log-Group
+    }
 }
 
 Package

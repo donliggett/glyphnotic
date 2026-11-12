@@ -1,6 +1,6 @@
 # Glyphnotic — Build Spec
 
-Status: v1.0 spec, ready to build. Repository private; license to be decided (see Licensing).
+Status: v1.0, built in Phases 0–5 (`docs/build-history/`). Repository private; license to be decided (see Licensing).
 
 ## Overview
 
@@ -42,6 +42,7 @@ Out of scope for v1.0: rendering or exporting video files, a separate settings w
 ```
 CMakeLists.txt, CMakePresets.json, buildspec.json, cmake/, build-aux/, .github/   from the plugin template
 cmake/common/manifest.json.in   template for data/manifest.json
+cmake/windows/resources/installer-Windows.iss   the Windows installer (Inno Setup 6)
 src/
   plugin-main.cpp      module load, registers the four filters
   glyph-filter.cpp     shared filter: create/destroy/update/render, palette capture, grid dump
@@ -62,7 +63,8 @@ data/
 tools/README.md        how to build and run the test tools
 tools/harness/         headless libobs runner for a filter on a still (debug builds only)
 tools/reference/       Python + NumPy reference implementation, compare and run scripts
-tools/linux-check/     end-of-phase Linux check: OBS under xvfb-run in an Ubuntu 26.04 container
+tools/linux-check/     end-of-phase Linux check: OBS under xvfb-run in an Ubuntu 26.04 container; the Linux install test
+tools/obs-tests/       Phase 5's tests in the OBS window (Windows): a Lua script and its driver
 tests/unit/            standalone C++ unit tests (no OBS needed)
 tests/stills/          openly licensed test stills (with ATTRIBUTION.md)
 docs/
@@ -268,7 +270,7 @@ Flatpak builds of OBS aren't covered in v1.0 (see Roadmap).
 
 ### macOS (may work)
 
-CI produces `glyphnotic-<version>-macos.pkg`. It isn't tested; reports are welcome.
+CI produces `glyphnotic-<version>-macos-universal.pkg`. It isn't tested; reports are welcome.
 
 ### Building from source
 
@@ -312,12 +314,12 @@ A builder starting a phase first reads `docs/BUILDER-NOTES.md`, the previous pha
 - [x] Ranges, defaults and `K_mode` values written back into this spec (every suite passes on Direct3D 11 and OpenGL with them. Linux check passed: OBS 33 on Mesa llvmpipe, no errors, 0 leaks)
 
 **Phase 5: performance, packaging, release**
-- [ ] `docs/PERFORMANCE.md`: GPU time per look at 1920×1080, measured with libobs GPU timer queries (or OBS's render-time stat with and without the filter), with the test GPU named
-- [ ] On the test machine at 1920×1080, 60 fps: three Ink/ASCII instances on three sources run with no lagged or skipped frames in OBS's stats; one Every Glyph instance does the same
-- [ ] Adding and removing a filter 100 times leaves "Number of memory leaks: 0" in the OBS log at exit
-- [ ] Settings survive an OBS restart; instances on different sources stay independent
-- [ ] Windows installer and zip, Linux .deb and tarball, macOS .pkg from CI; install and uninstall tested on Windows and Linux by following Install exactly
-- [ ] `README.md` and `docs/INSTALL.md` final; `v1.0.0` tagged with a GitHub Release
+- [x] `docs/PERFORMANCE.md`: GPU time per look at 1920×1080, measured with libobs GPU timer queries (or OBS's render-time stat with and without the filter), with the test GPU named (measured on an RTX 4070 Ti, Direct3D 11, as three instances per scene: Ink's ASCII looks 1.25–1.32 ms per frame, Static 1.51, Fever 1.66, Every Glyph 4.01, Blocks, Poster and Console 1.16–1.17)
+- [x] On the test machine at 1920×1080, 60 fps: three Ink/ASCII instances on three sources run with no lagged or skipped frames in OBS's stats; one Every Glyph instance does the same (measured: 60 s recordings with NVENC, 0 lagged and 0 skipped frames in both, and with three Fever instances)
+- [x] Adding and removing a filter 100 times leaves "Number of memory leaks: 0" in the OBS log at exit (measured: 100 times through OBS's Filters window, and 400 through the API)
+- [x] Settings survive an OBS restart; instances on different sources stay independent (measured: three filters' settings, a captured palette included, identical after a restart and each picture pixel-identical; changing one changes only its own source)
+- [ ] Windows installer and zip, Linux .deb and tarball, macOS .pkg from CI; install and uninstall tested on Windows and Linux by following Install exactly (done before the push: the installer script and CI wiring, the Windows zip and the Linux .deb and tarball tested by following Install; left: CI's packages with Phase 5's changes, and the installer built and tested)
+- [ ] `README.md` and `docs/INSTALL.md` final; `v1.0.0` tagged with a GitHub Release (README and INSTALL final, version 1.0.0; left: the tag and the release, after the Phase 5 review)
 
 ## Test assets
 

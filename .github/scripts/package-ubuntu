@@ -173,6 +173,8 @@ ${_usage_host:-}"
   rm -rf ${stage_dir}
   mkdir -p ${stage_dir}/${product_name}
   cp ${project_root}/release/${config}/lib/*/obs-modules/plugins/${product_name}.so ${stage_dir}/${product_name}/
+  # Like the .deb's copy: debug info goes to the .ddeb, not the tarball.
+  strip --strip-unneeded ${stage_dir}/${product_name}/${product_name}.so
   cp -R ${project_root}/release/${config}/share/obs/obs-modules/plugins/${product_name} ${stage_dir}/${product_name}/data
 
   pushd ${stage_dir}

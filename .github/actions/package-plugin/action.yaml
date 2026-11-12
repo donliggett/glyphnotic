@@ -37,7 +37,7 @@ inputs:
     required: false
     default: ''
   package:
-    description: Create Windows or macOS installation package
+    description: Create the Windows installer, the macOS .pkg or the Linux .deb
     required: false
     default: 'false'
   workingDirectory:
@@ -108,6 +108,10 @@ runs:
         $PackageArgs = @{
           Target = '${{ inputs.target }}'
           Configuration = '${{ inputs.config }}'
+        }
+
+        if ( '${{ inputs.package }}' -eq 'true' ) {
+          $PackageArgs += @{ BuildInstaller = $true }
         }
 
         .github/scripts/Package-Windows.ps1 @PackageArgs

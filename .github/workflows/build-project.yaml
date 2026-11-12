@@ -48,7 +48,8 @@ jobs:
               fi
               ;;
             workflow_dispatch)
-              config_data=('codesign:true' 'notarize:false' 'package:false' 'config:RelWithDebInfo')
+              # Manual runs package too, so the installer and the .pkg can be tried before a release tag.
+              config_data=('codesign:true' 'notarize:false' 'package:true' 'config:RelWithDebInfo')
               ;;
             schedule)
               config_data=('codesign:true' 'notarize:false' 'package:true' 'config:RelWithDebInfo')
@@ -302,6 +303,16 @@ jobs:
           cmake -S tests/unit -B build_tests
           cmake --build build_tests --config Release
           ctest --test-dir build_tests -C Release --output-on-failure
+
+      - name: Install Inno Setup 📦
+        if: fromJSON(needs.check-event.outputs.package)
+        run: |
+          # Install Inno Setup 📦
+          # The Windows installer is built with Inno Setup 6 (cmake/windows/resources/installer-Windows.iss).
+          if ( ! ( Get-Command iscc -ErrorAction SilentlyContinue ) -and
+               ! ( Test-Path "${env:ProgramFiles(x86)}/Inno Setup 6/ISCC.exe" ) ) {
+            choco install innosetup --no-progress -y
+          }
 
       - name: Package Plugin 📀
         uses: ./.github/actions/package-plugin

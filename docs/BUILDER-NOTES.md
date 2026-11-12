@@ -1,6 +1,6 @@
 # Builder notes
 
-How Glyphnotic is built and tested in practice, from Phases 0–4. Commands
+How Glyphnotic is built and tested in practice, from Phases 0–5. Commands
 over prose; the why is in `docs/build-history/`.
 
 ## Standing rules
@@ -97,6 +97,7 @@ repository's `data\`, so shader edits need no rebuild; don't rebuild
 | Color paths | `... run_color_paths.py --build ..\..\build_dbg\RelWithDebInfo` | ~1 min |
 | Motion over time | `... run_motion.py --build ..\..\build_dbg\RelWithDebInfo` (add `--renderer opengl --out ..\..\build_motion_gl`) | ~11 min |
 | Tuning measurements (Phase 4; not pass/fail) | `... run_tuning.py --build ..\..\build_dbg\RelWithDebInfo` (suites hold, noise, boil, ranges, looks) | ~15 min |
+| GPU time at 1080p60 (Phase 5; not pass/fail) | `... run_performance.py --build ..\..\build_dbg\RelWithDebInfo` (add `--renderer opengl --out ..\..\build_perf_gl`; suites looks, scale, charsets, instances) | ~13 min |
 
 One case: `run_stills.py ... --only ink-victor`; some motion suites:
 `run_motion.py ... --only boil,jump` (suites: source, flicker, still, boil,
@@ -143,6 +144,25 @@ Automation plus `SetCursorPos`/`mouse_event` can drive the Filters window
 (Phase 2 did, to test a slider drag); make the window tall first, since
 controls scrolled out of view report off-window rectangles.
 
+## OBS-window tests (Phase 5)
+
+`tools/obs-tests/run_obs_tests.py` drives OBS by itself (no mouse needed):
+it backs up the test collection and profile, sets the profile to 1080p60,
+adds its scenes and `glyphnotic-tests.lua` to the collection, and starts
+OBS once per test with `GLYPHNOTIC_TEST` set; the Lua script runs the test
+and logs `P5 ...` lines, the driver closes OBS and reads the log. Install
+the release build first (above), OBS closed, GPU otherwise idle:
+
+```powershell
+.venv\Scripts\python tools\obs-tests\run_obs_tests.py --backup-dir D:\Repos\Glyphnotic_backups
+```
+
+About 12 minutes (`--only leak-ui,persist` for some); `leak-ui` clicks
+through the Filters window with the real mouse for about 3 minutes.
+`--only idle` starts and closes OBS with the script loaded (a baseline). The profile stays at
+1920×1080, 60 fps afterwards (it was 1280×720 output at 30 fps before
+Phase 5; the backup has it).
+
 ## Linux check (end of every phase)
 
 Docker Desktop, from the repository root in Git Bash:
@@ -167,6 +187,17 @@ filter or code path worth a GLSL check to the script's test collection. If
 it stops in "Installing OBS 33" with an SSL error from Launchpad, that's the
 network: run it again.
 
+### Linux install test (Phase 5, and before a release)
+
+Same Docker setup; it installs and removes the .deb and the tarball by
+following `docs/INSTALL.md` (built here, or CI's mounted at `/pkgs`):
+
+```bash
+MSYS_NO_PATHCONV=1 docker run --rm -v "$PWD:/src:ro" -v "$PWD/build_install_check:/out" ubuntu:26.04 bash /src/tools/linux-check/install-check.sh
+```
+
+About 6 minutes; `build_install_check/install-result.txt` lists the checks.
+
 ## CI
 
 Windows and Ubuntu build on every push to `main` (macOS on tags and manual
@@ -181,6 +212,14 @@ gh run watch <run id> --exit-status
 ```
 
 `gh run list --commit` needs the full SHA; with a short one it finds nothing.
+
+Pushes to `main` and manual runs (`gh workflow run dispatch.yaml --ref main
+-f job=build`, which adds macOS, about 5 minutes) package everything,
+including the Windows installer (Inno Setup, installed on the runner with
+Chocolatey). Releases: `docs/BUILDING.md`, Making a release. A tag
+`v<version>` must match `buildspec.json`'s version or the release job
+fails. New executable scripts need `git add --chmod=+x` (the checkout is on
+Windows).
 
 ## Lessons that cost time
 
@@ -226,6 +265,34 @@ gh run watch <run id> --exit-status
   compare modes by glyph changes per frame or by the picture.
 - **σ 2/255 noise is a quiet camera.** At σ 4/255 Hold 10 lets 0.4–5% of
   cells change per frame; the looks use Hold 25 (Phase 4).
+- **A lone filter's GPU time is noisy**: on an otherwise idle GPU one
+  instance timed 1.8–3.0 ms from run to run where the same filter costs
+  1.2–1.4 ms per instance under load (likely short bursts of work running
+  below full clocks; `nvidia-smi` sampling once a second can't show it). Time three
+  instances in one scene and divide the scene's time (`run_performance.py`
+  does).
+- **A look named in `--settings` overrides the settings beside it** (a
+  newly named look fills in its settings): `{"look": "black", "charset":
+  "every"}` runs ASCII. To vary a look's setting, pass the look's values
+  without `look`.
+- **Heredocs in the agent's Bash tool eat backslashes**, also in quoted
+  (`<<'EOF'`) heredocs: `\n` and Windows paths came out as newlines,
+  carriage returns and backspaces. Write edit scripts with the Write tool
+  and run them.
+- **`--disable-missing-files-check` makes OBS 33.0.1 leak** one allocation
+  by itself ("Number of memory leaks: 1" with no Glyphnotic filter in
+  sight). Don't start OBS with it for a leak check. `--disable-shutdown-check`
+  doesn't exist on Windows; after OBS is killed it asks about Safe Mode on
+  the next start: choose to run normally.
+- **Lua test scripts: no frontend event callback while ticking.** Steps run
+  in `script_tick` on the graphics thread; `obs_frontend_set_current_scene`
+  there waits for the UI thread, which waits for the script's lock to
+  deliver the scene-change event: OBS hangs. Poll state instead.
+- **UI Automation on OBS (Qt)**: handles go stale as Qt rebuilds its
+  accessibility tree and clicks can land mid-layout; look controls up on
+  every use and retry a click whose result doesn't appear
+  (`filters-ui.ps1`). Invoking a button that opens a menu or dialog blocks;
+  click with the mouse instead.
 - **Slider ranges are UI only** (`src/settings.hpp`): scene files and
   scripts may set wider values; only motion settings and Poster's Levels
   are clamped. `run_looks.py` checks the ranges against the spec.

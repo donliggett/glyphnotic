@@ -13,6 +13,10 @@ Test tools for Glyphnotic. None of this ships with the plugin.
 | `reference/run_motion.py` | Checks the motion settings over time: flicker under noise for every look, Boil 0 on a still, Boil's rate, linger and spread, Light jump, Hold against the reference's costs, Settle |
 | `reference/run_tuning.py` | Phase 4's tuning measurements: Hold on a still and a panning still under noise, the looks under heavier noise, Boil spread's cost ranges, the static sliders' sweeps; and draws the stills in `docs/LOOKS.md` |
 | `reference/tuning.py` | Helpers for `run_tuning.py`: a fresh pick drawn from the reference, crops, contact sheets |
+| `reference/run_performance.py` | Phase 5's GPU-time measurements at 1920×1080, 60 fps: every look, cell scales, character sets, and how the time grows with instances (`docs/PERFORMANCE.md`) |
+| `obs-tests/run_obs_tests.py`, `obs-tests/glyphnotic-tests.lua`, `obs-tests/filters-ui.ps1` | Phase 5's tests in the OBS window (Windows): three Ink/ASCII instances and one Every Glyph instance at 1080p60 with no lagged or skipped frames, adding and removing filters 100 times in the Filters window (and 400 through the API) with 0 leaks, settings surviving a restart with instances staying independent |
+| `linux-check/obs-xvfb-check.sh` | The end-of-phase Linux check: OBS 33 under `xvfb-run` in an Ubuntu 26.04 container with every filter |
+| `linux-check/install-check.sh` | Phase 5's Linux install test: the .deb and the tarball installed and removed by following `docs/INSTALL.md` |
 | `reference/run_color_paths.py` | Checks colors along OBS's other color paths: Color Correction before and after, 10-bit and HDR canvases, 16-bit and HDR sources |
 | `reference/make_stills.py` | Rebuilds `tests/stills/` (see `tests/stills/ATTRIBUTION.md`) |
 | `reference/imageio_min.py` | PNG/PAM/BMP reading and PNG writing with only NumPy |
@@ -181,6 +185,89 @@ The container is removed afterwards (`--rm`); the `ubuntu:26.04` image
 (163 MB) stays cached for the next phase. On a Linux machine, the same
 `docker run` works with `$PWD` as is.
 
+## Linux install test (Phase 5, and before a release)
+
+`linux-check/install-check.sh` installs and removes the packages exactly as
+`docs/INSTALL.md` says, as an ordinary user with sudo in a fresh
+`ubuntu:26.04` container: `sudo apt install ./<deb>`, OBS under `xvfb-run`
+on a collection with Glyphnotic Ink on an image source, `sudo apt remove
+glyphnotic`, OBS again; then the tarball extracted into
+`~/.local/share/obs-studio/plugins`, OBS, the folder deleted, OBS again.
+With the plugin installed it checks that OBS loaded it (with the package's
+version), created the filter, logged no Glyphnotic errors and 0 leaks;
+after removing it, that OBS didn't load it and no files are left. It builds
+the packages with CI's scripts (`build-ubuntu`, `package-ubuntu --package`),
+or tests the ones in a folder mounted at `/pkgs` (CI's, downloaded with
+`gh run download`):
+
+```bash
+mkdir -p build_install_check
+```
+
+```bash
+MSYS_NO_PATHCONV=1 docker run --rm -v "$PWD:/src:ro" -v "$PWD/build_install_check:/out" ubuntu:26.04 bash /src/tools/linux-check/install-check.sh
+```
+
+```bash
+MSYS_NO_PATHCONV=1 docker run --rm -v "$PWD:/src:ro" -v "$PWD/build_install_check:/out" -v "$PWD/build_ci_packages:/pkgs:ro" ubuntu:26.04 bash /src/tools/linux-check/install-check.sh
+```
+
+About 6 minutes. `build_install_check/` then holds `install-result.txt`,
+OBS's four logs and (when it built them) `packages/`.
+
+## Performance (Phase 5)
+
+`reference/run_performance.py` times the filter's GPU work with OBS's
+source profiler (libobs GPU timer queries) through the harness, on 1080p
+stills at 60 fps; `docs/PERFORMANCE.md` explains the method and has the
+figures. From `tools\reference`, with the GPU otherwise idle (about 13
+minutes per renderer):
+
+```powershell
+..\..\.venv\Scripts\python run_performance.py --build ..\..\build_dbg\RelWithDebInfo
+```
+
+```powershell
+..\..\.venv\Scripts\python run_performance.py --build ..\..\build_dbg\RelWithDebInfo --renderer opengl --out ..\..\build_perf_gl
+```
+
+`--only looks,instances` runs some of its suites, `--frames` changes the
+600 frames per case.
+
+## Tests in the OBS window (Phase 5, Windows)
+
+`obs-tests/run_obs_tests.py` runs OBS itself, with the "Glyphnotic Test"
+scene collection and profile only, once per test, and reads its log. Close
+OBS and install the release build in
+`C:\ProgramData\obs-studio\plugins\glyphnotic\` first. It backs up the
+collection and the profile's `basic.ini` into `--backup-dir` (once per day:
+`<date> before Phase 5 tests - <file>`), then sets the profile to 1920×1080
+at 60 fps with recordings in `build_obs_tests\recordings\`, adds its scenes
+("Phase 5 ...") and `obs-tests/glyphnotic-tests.lua` to the collection, and
+starts OBS with `GLYPHNOTIC_TEST` set so the script runs the test (the
+script does nothing without it). From the repository root (about 12
+minutes):
+
+```powershell
+.venv\Scripts\python tools\obs-tests\run_obs_tests.py --backup-dir <a folder outside the repository>
+```
+
+Tests: `perf-ascii` (Ink Black, Tint and Phosphor on three 1080p images),
+`perf-every` (one Every Glyph), `perf-fever` (three Fever: heavier than the
+spec asks), `perf-none` (the three images without a filter), each recording
+for 60 s (`--seconds`) and passing with no lagged or skipped frames;
+`leak-ui` (a filter added and removed 100 times in OBS's Filters window
+by `filters-ui.ps1`, with Windows UI Automation and real mouse clicks, no
+script loaded; "Number of memory leaks: 0" at exit); `leak` (each filter
+added and removed 100 times through the API from the script); `persist` (settings set on three sources as the properties
+window sets them, Capture palette included; OBS restarted; the same
+settings and pictures after the restart; changing one filter's look changes
+only that source). `--only leak,persist` runs some. Results go to
+`build_obs_tests/results.json`; OBS's windows open and close by themselves,
+so leave the mouse and keyboard alone while it runs. It doesn't start OBS
+with `--disable-missing-files-check`: with that flag OBS 33.0.1 logs one
+leak of its own.
+
 ## Formatting
 
 CI checks C/C++ under `src/` with clang-format and the CMake files with
@@ -212,7 +299,7 @@ On Linux the same commands run from `.venv/bin/`.
 ## What the scripts report
 
 Results go to `build_stills/`, `build_looks/`, `build_levels/`,
-`build_motion/` (or `--out`) and `build_color_paths/` at the repository
+`build_motion/` (or `--out`), `build_color_paths/` and `build_perf/` at the repository
 root: grid dumps, recordings (`.rec`), frames as `.pam`, settings and
 properties as JSON, `results.json`. Each script
 prints a Markdown table and exits with 0 when every case passes. One case

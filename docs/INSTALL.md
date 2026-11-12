@@ -7,9 +7,17 @@ flags as "Legacy" in **Tools → Plugin Manager** and stops loading in OBS 34.
 Packages are attached to GitHub Releases. Until the repository is public,
 only signed-in collaborators can download them.
 
-> Status (Phase 0): the Windows zip and Linux .deb and tarball are produced by CI on every push to main; the macOS .pkg only for release tags and manual runs.
-> The Windows installer arrives in Phase 5. Install and
-> uninstall are tested end to end in Phase 5.
+Each release has:
+
+| File | For |
+| --- | --- |
+| `glyphnotic-<version>-windows-x64-installer.exe` | Windows: installs for all users and adds an uninstaller |
+| `glyphnotic-<version>-windows-x64.zip` | Windows by hand, and portable OBS |
+| `glyphnotic-<version>-linux-x86_64.deb` | Ubuntu 26.04 LTS and current Debian with OBS 33 from OBS's PPA |
+| `glyphnotic-<version>-linux-x86_64.tar.xz` | Other Linux distributions: a per-user install |
+| `glyphnotic-<version>-macos-universal.pkg` | macOS (may work; not tested) |
+
+`CHECKSUMS.txt` in the release notes lists each file's SHA-256.
 
 ## Where OBS 33 looks for plugins
 
@@ -60,12 +68,28 @@ layout (`.../obs-studio/plugins/<plugin>/bin/<plugin>.so`) is not used.
 ## Windows
 
 1. Close OBS.
-2. Unzip `glyphnotic-<version>-windows-x64.zip` into
-   `C:\ProgramData\obs-studio\plugins\` so that it contains a `glyphnotic`
-   folder. (Once it exists, run `glyphnotic-<version>-windows-x64-installer.exe` instead.)
+2. Run `glyphnotic-<version>-windows-x64-installer.exe` and accept Windows'
+   prompt to let it make changes (it installs into `C:\ProgramData`, for
+   all users). It installs to `C:\ProgramData\obs-studio\plugins\glyphnotic\`;
+   there's no folder to choose. Or, without the installer, unzip
+   `glyphnotic-<version>-windows-x64.zip` into `C:\ProgramData\obs-studio\plugins\`
+   so that it contains a `glyphnotic` folder.
 3. Start OBS. Right-click a source → **Filters** → **+** and pick a Glyphnotic filter.
 
-Uninstall: delete `C:\ProgramData\obs-studio\plugins\glyphnotic`.
+**Tools → Plugin Manager** lists Glyphnotic with its version.
+
+Portable OBS ignores `C:\ProgramData`: unzip the zip into the `plugins`
+folder inside OBS's own folder (create it if needed), so that it contains
+`plugins\glyphnotic\glyphnotic.dll`.
+
+Uninstall: close OBS, then **Settings → Apps → Installed apps** →
+**Glyphnotic (OBS Studio plugin)** → **Uninstall** if you used the
+installer, or delete `C:\ProgramData\obs-studio\plugins\glyphnotic` if you
+unzipped it. Settings saved in your scene collections stay there; a filter
+whose plugin is missing is kept by OBS and works again once the plugin is back.
+
+To upgrade, close OBS and run the newer installer (or unzip the newer zip
+over the old folder).
 
 ## Linux
 
@@ -88,8 +112,10 @@ Uninstall: delete `C:\ProgramData\obs-studio\plugins\glyphnotic`.
 
 3. Start OBS. Right-click a source → **Filters** → **+** and pick a Glyphnotic filter.
 
-Uninstall: `sudo apt remove glyphnotic`, or delete
-`~/.local/share/obs-studio/plugins/glyphnotic`.
+Uninstall: close OBS, then `sudo apt remove glyphnotic`, or delete
+`~/.local/share/obs-studio/plugins/glyphnotic` for the tarball. To upgrade,
+install the newer .deb the same way, or extract the newer tarball over the
+old folder.
 
 ## macOS (may work)
 

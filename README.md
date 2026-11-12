@@ -1,18 +1,53 @@
 # Glyphnotic
 
 An OBS Studio plugin that redraws any video source as a live grid of
-characters. It adds four video filters, one per drawing mode: Ink, Mosaic,
-Poster and Console.
+characters. It adds four video filters, one per drawing mode:
 
-**Status:** in development. Phase 2 is done: all four filters draw, with
-their settings and looks; the motion controls come in Phase 3. See
-[docs/SPEC.md](docs/SPEC.md) for the full design and build phases, and
-[docs/build-history/](docs/build-history/) for a report on each phase.
+| Filter | Look |
+| --- | --- |
+| Glyphnotic Ink | Characters chosen by brightness and shape, lit in the picture's own colors or a fixed ink |
+| Glyphnotic Mosaic | Block characters with free text and background colors |
+| Glyphnotic Poster | Mosaic with colors snapped to a few levels per channel |
+| Glyphnotic Console | Characters and colors limited to a 16-color palette, VGA or captured from the picture |
 
-- Requirements: OBS Studio 33.0.0 or later; Windows 10/11 x64 or Linux x86_64
-  (macOS may work).
+Each is an ordinary OBS filter: it goes on any source, scene or group,
+stacks with other filters, and every instance keeps its own settings. Each
+comes with named looks (ten in all; [docs/LOOKS.md](docs/LOOKS.md) shows
+them) and motion controls, from a locked, still grid that holds steady on a
+noisy camera to a deliberately boiling one.
+
+**Version 1.0.0.** Requirements: OBS Studio 33.0.0 or later, on Windows 10/11
+x64 or Linux x86_64 (Ubuntu 26.04 LTS and current Debian get a .deb; other
+distributions use the tarball or build from source). macOS packages are
+built but not tested.
+
 - Install: [docs/INSTALL.md](docs/INSTALL.md)
+- The looks: [docs/LOOKS.md](docs/LOOKS.md)
+- GPU cost: [docs/PERFORMANCE.md](docs/PERFORMANCE.md) (on a 1080p source
+  and an RTX 4070 Ti, about 1.3 ms of GPU time per frame for an ASCII Ink
+  look and 4 ms for Every Glyph)
 - Build from source: [docs/BUILDING.md](docs/BUILDING.md)
+- Design and acceptance tests: [docs/SPEC.md](docs/SPEC.md), with a report
+  on each build phase in [docs/build-history/](docs/build-history/)
+
+## Using it
+
+Right-click a source → **Filters** → **+** → a Glyphnotic filter. Pick a
+**Look**, then adjust:
+
+- **Characters**: the set (Blocks, Lines, ASCII, Every glyph, or your own
+  characters).
+- **Grid**: cell scale (1×–4×; larger cells are cheaper and chunkier),
+  alignment, the edges' color, and whether transparent areas stay
+  transparent.
+- **Motion**: Soften and Hold calm a live camera's noise; Settle smooths
+  color changes; Boil, Boil spread and Boil linger swap glyphs on purpose.
+- The filter's own settings: Ink's color, background, levels and shape;
+  Poster's levels; Console's palette (**Capture palette** takes 16 colors
+  from the current picture).
+
+Changing a setting turns the look to **Custom**; picking a look again
+restores its values.
 
 ## Credits
 
@@ -25,4 +60,6 @@ their settings and looks; the motion controls come in Phase 3. See
 
 ## License
 
-Contains GPL-2.0 code from the OBS plugin template; Glyphnotic's own license is to be decided (the repository stays private until then).
+Contains GPL-2.0 code from the OBS plugin template, and links libobs
+(GPL-2.0-or-later), so Glyphnotic's own license, still to be decided, will be
+GPL-compatible. The repository and its releases stay private until then.

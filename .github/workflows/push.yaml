@@ -41,19 +41,37 @@ jobs:
           if [[ "${RUNNER_DEBUG}" ]]; then set -x; fi
           shopt -s extglob
 
-          case "${GITHUB_REF_NAME}" in
+          # Release tags are v<version> (v1.0.0) or <version>; the version must be buildspec.json's.
+          version="${GITHUB_REF_NAME#v}"
+          case "${version}" in
             +([0-9]).+([0-9]).+([0-9]) )
               echo 'validTag=true' >> $GITHUB_OUTPUT
               echo 'prerelease=false' >> $GITHUB_OUTPUT
-              echo "version=${GITHUB_REF_NAME}" >> $GITHUB_OUTPUT
               ;;
             +([0-9]).+([0-9]).+([0-9])-@(beta|rc)*([0-9]) )
               echo 'validTag=true' >> $GITHUB_OUTPUT
               echo 'prerelease=true' >> $GITHUB_OUTPUT
-              echo "version=${GITHUB_REF_NAME}" >> $GITHUB_OUTPUT
               ;;
             *) echo 'validTag=false' >> $GITHUB_OUTPUT ;;
           esac
+          echo "version=${version}" >> $GITHUB_OUTPUT
+          echo "tag=${GITHUB_REF_NAME}" >> $GITHUB_OUTPUT
+
+      - uses: actions/checkout@v4
+        if: fromJSON(steps.check.outputs.validTag)
+        with:
+          path: source
+
+      - name: Check Version ☑️
+        if: fromJSON(steps.check.outputs.validTag)
+        run: |
+          : Check Version ☑️
+          spec_version="$(jq -r .version source/buildspec.json)"
+          if [[ "${spec_version}" != "${{ steps.check.outputs.version }}" ]]; then
+            echo "::error::Tag ${GITHUB_REF_NAME} doesn't match buildspec.json's version ${spec_version}"
+            exit 1
+          fi
+          rm -rf source
 
       - name: Download Build Artifacts 📥
         uses: actions/download-artifact@v4
@@ -107,7 +125,7 @@ jobs:
         with:
           draft: true
           prerelease: ${{ fromJSON(steps.check.outputs.prerelease) }}
-          tag_name: ${{ steps.check.outputs.version }}
+          tag_name: ${{ steps.check.outputs.tag }}
           name: ${{ needs.build-project.outputs.pluginName }} ${{ steps.check.outputs.version }}
           body_path: ${{ github.workspace }}/CHECKSUMS.txt
           files: |

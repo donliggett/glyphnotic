@@ -47,7 +47,23 @@ If `cmake` isn't on your PATH, use Visual Studio's copy at
 
 CI builds with `.github/scripts/Build-Windows.ps1` and packages with
 `.github/scripts/Package-Windows.ps1` (PowerShell 7, CI only), which zips the
-install folder as `release/glyphnotic-<version>-windows-x64.zip`.
+install folder as `release/glyphnotic-<version>-windows-x64.zip` and, with
+`-BuildInstaller` (whenever CI packages: pushes to `main`, tags and manual
+runs), compiles `cmake/windows/resources/installer-Windows.iss` with
+[Inno Setup 6](https://jrsoftware.org/isinfo.php) into
+`release/glyphnotic-<version>-windows-x64-installer.exe`. CI installs Inno
+Setup with Chocolatey when the runner doesn't have it. The installer needs
+administrator rights, installs only to
+`C:\ProgramData\obs-studio\plugins\glyphnotic\` and registers an
+uninstaller; its `AppId` is fixed so upgrades replace the earlier install.
+
+To build the installer by hand, install Inno Setup 6, install the plugin into
+`release\RelWithDebInfo` as above, and run from the repository root (the
+defines are what `Package-Windows.ps1` passes):
+
+```powershell
+& "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /DProductName=glyphnotic /DDisplayName=Glyphnotic /DProductVersion=1.0.0 "/DAuthor=Don Liggett" /DWebsite=https://github.com/donliggett/glyphnotic "/DSourceDir=$PWD\release\RelWithDebInfo" "/DOutputDir=$PWD\release" /DOutputBaseFilename=glyphnotic-1.0.0-windows-x64-installer cmake\windows\resources\installer-Windows.iss
+```
 
 ## Linux
 
@@ -101,7 +117,7 @@ The scripts install into `release/RelWithDebInfo/` in the system layout
 
 - `release/glyphnotic-<version>-linux-x86_64.deb` (with `--package`), plus its `-dbgsym.ddeb`
 - `release/glyphnotic-<version>-linux-x86_64.tar.xz`, the per-user layout
-  (`glyphnotic/glyphnotic.so`, `glyphnotic/data/`) for `~/.local/share/obs-studio/plugins/`
+  (`glyphnotic/glyphnotic.so`, stripped like the .deb's, and `glyphnotic/data/`) for `~/.local/share/obs-studio/plugins/`
 - `release/glyphnotic-<version>-source.tar.xz`
 
 ## macOS
@@ -120,6 +136,33 @@ cmake --build --preset macos
 CI uses `.github/scripts/build-macos` and `.github/scripts/package-macos`,
 which produce `release/glyphnotic-<version>-macos-universal.pkg`. Without
 signing secrets the package is unsigned.
+
+## Making a release
+
+1. Set the new version in `buildspec.json` (`version`), commit and push to
+   `main`, and wait for CI to pass. Pushes to `main` build the Windows zip
+   and installer and the Linux .deb and tarball; a manual run (**Actions →
+   Dispatch → Run workflow**, job `build`) builds macOS's .pkg as well.
+2. Try the packages from that run (`gh run download <run id>`): on Windows
+   by following [INSTALL.md](INSTALL.md); on Linux with
+   `tools/linux-check/install-check.sh` and the packages mounted at `/pkgs`
+   ([tools/README.md](../tools/README.md)).
+3. Tag the commit `v<version>` (for example `v1.0.0`) and push the tag:
+
+   ```bash
+   git tag -a v1.0.0 -m "Glyphnotic 1.0.0"
+   ```
+
+   ```bash
+   git push origin v1.0.0
+   ```
+
+   The tag's run builds every platform in the Release configuration, checks
+   that the tag matches `buildspec.json`'s version, and creates a **draft**
+   GitHub Release named "Glyphnotic <version>" holding every package and a
+   `CHECKSUMS.txt` (SHA-256) as its notes. Tags `v<version>-rc<n>` and
+   `-beta<n>` make prereleases.
+4. Check the draft's files, add notes, and publish it.
 
 ## Unit tests
 
