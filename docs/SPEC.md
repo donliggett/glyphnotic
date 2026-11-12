@@ -72,6 +72,7 @@ docs/
   BUILDER-NOTES.md     how the builder works: shell, commands, test suites, OBS and Linux checks, standing rules
   build-history/       one report per build phase
   looks/               the stills in LOOKS.md
+  images/              the logo (not covered by the GPL; see Licensing)
   licenses/            license texts of bundled third-party material
 ```
 
@@ -331,6 +332,7 @@ Test stills come from openly licensed footage (for example the Blender Foundatio
 - Why GPL: the plugin links libobs, which is GPL-2.0-or-later, so distributed binaries need a GPL-compatible license. GPL-2.0-or-later matches libobs, the plugin template and most OBS plugins. Packages may be sold or offered as donation-ware; buyers get the source and the GPL's rights with them.
 - The plugin template's license terms (reviewed in Phase 0): the template repository ships the GPL-2.0 license text, and its source files carry a "GPL version 2 or (at your option) any later version" notice. Glyphnotic keeps the template's CMake, CI and `plugin-support` files. The template's `LICENSE` file is kept as `docs/licenses/obs-plugintemplate-GPL-2.0.txt` (the same text as the root `LICENSE`).
 - The bundled font is public domain (see Font).
+- The Glyphnotic name and logo (`docs/images/glyphnotic-logo.svg`) are not covered by the GPL (README, License).
 
 ## Roadmap
 

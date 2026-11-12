@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/images/glyphnotic-logo.svg" alt="Glyphnotic" width="360">
+</p>
+
 # Glyphnotic
 
 An OBS Studio plugin that redraws any video source as a live grid of
@@ -29,6 +33,13 @@ built but not tested.
 - Build from source: [docs/BUILDING.md](docs/BUILDING.md)
 - Design and acceptance tests: [docs/SPEC.md](docs/SPEC.md), with a report
   on each build phase in [docs/build-history/](docs/build-history/)
+
+## Support
+
+Glyphnotic is free. If it's useful to you, you can support its development
+on Ko-fi:
+
+[![Support me on Ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/donliggett)
 
 ## Using it
 
@@ -69,3 +80,7 @@ has the matching source (`glyphnotic-<version>-source.tar.xz`).
 Copyright (C) 2026 Don Liggett. Glyphnotic links libobs (GPL-2.0-or-later)
 and keeps the OBS plugin template's build files (GPL-2.0-or-later). The
 bundled font is public domain.
+
+The Glyphnotic name and logo (`docs/images/glyphnotic-logo.svg`) are not
+covered by the GPL: forks and modified versions should use their own name
+and logo.
