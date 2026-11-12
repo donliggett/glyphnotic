@@ -10,15 +10,13 @@ Date: 2026-11-11. Plugin version 1.0.0. Built against OBS Studio 33.0.1.
 | At 1920×1080, 60 fps: three Ink/ASCII instances on three sources with no lagged or skipped frames; one Every Glyph instance the same | **Done.** OBS 33.0.1 recording with NVENC for 60 s: Ink Black, Tint and Phosphor on three 1080p images, 3616 frames drawn, 0 lagged, 0 skipped; Every Glyph on one, 3614 drawn, 0 and 0. Three Fever instances (not asked) also 0 and 0. |
 | Adding and removing a filter 100 times leaves "Number of memory leaks: 0" | **Done.** 100 times in OBS's Filters window (+, the filter, OK; select it, −, Yes; Ink, Mosaic, Poster and Console in turn), driven by Windows UI Automation and the mouse: OBS logged 100 adds and 100 removes and "Number of memory leaks: 0". Also 400 times through the API from a Lua script (each filter 100 times): 0. |
 | Settings survive an OBS restart; instances on different sources stay independent | **Done.** Three filters on three sources set as the properties window sets them (Ink with custom characters, custom ink, Tint, Gamma 1.2, Hold 60, Soften 1, cell scale 2, top-left, transparent edges; Console with a captured palette, ASCII, Hold 40, Settle 50; Poster with Levels 3, cell scale 3). After quitting and restarting OBS, every filter's settings were identical and each source's screenshot pixel-identical. Changing one filter's look changed only that source's settings and picture. |
-| Windows installer and zip, Linux .deb and tarball, macOS .pkg from CI; install and uninstall tested on Windows and Linux by following Install exactly | **Partly, the rest needs a push.** Built: the Windows installer (Inno Setup script, new), wired into CI. Tested by following Install: the Windows zip (built locally as CI's script does) and the Linux .deb and tarball (built in a container with CI's own scripts) install, load, run and uninstall cleanly. Not yet done: the installer hasn't been compiled (Inno Setup isn't on this machine; CI installs it), and none of these packages has come from CI with this phase's changes, which needs a push. macOS built in CI (a manual run on Phase 4's commit, 2 minutes); its .pkg comes with this phase's change to manual runs. |
+| Windows installer and zip, Linux .deb and tarball, macOS .pkg from CI; install and uninstall tested on Windows and Linux by following Install exactly | **Done after the review's push** (commit `a755cc5`). CI built every package: on the push to `main` (run 43149732497) the Windows zip and installer and the Linux .deb and tarball, and on a manual run (43149744182) the same plus `glyphnotic-1.0.0-macos-universal.pkg` (not tested: macOS may work). CI's installer installed to `C:\ProgramData\obs-studio\plugins\glyphnotic\` and registered "Glyphnotic (OBS Studio plugin)" 1.0.0 under Installed apps; OBS loaded it with all 20 test filters and 0 leaks; its uninstaller removed the folder and the entry, and OBS then started without it, keeping the filters. CI's zip, unzipped as Install says, loaded the same. CI's .deb and tarball passed all 27 checks of `install-check.sh`. Before the push the same tests ran on locally built packages (below). |
 | `README.md` and `docs/INSTALL.md` final; `v1.0.0` tagged with a GitHub Release | **Partly.** README and INSTALL are final, the version is 1.0.0, and CI now makes a draft release for a `v1.0.0` tag. The tag and the release are publishing steps, left for after the review. |
 
-What's left after approval, in order: commit and push; check CI (Windows
-zip and installer, Linux .deb and tarball); a manual CI run for the macOS
-.pkg; install and uninstall CI's installer and zip on Windows and CI's .deb
-and tarball on Linux (`install-check.sh` with `/pkgs`); tag `v1.0.0` and
-push the tag; check and publish the draft release. Installing the Windows
-installer needs administrator rights, so one Windows prompt to accept.
+What's left: choose the license (and any donation links) and add them;
+then tag `v1.0.0`, push the tag, and check the draft release CI makes.
+Decided at the review: the license goes in before the tag, so 1.0.0's
+source and packages carry it.
 
 ## What was built
 
@@ -164,12 +162,13 @@ clang-format and gersemi report no changes.
 
 ## Deviations from the spec, with reasons
 
-- **Installer not compiled or tested yet**: Inno Setup isn't installed on
-  the test machine, and installing it means downloading software, which I
-  didn't do without asking. CI installs it on its runner; the installer
-  gets tested from CI's build after the push.
-- **CI packages, the tag and the release wait for approval**: they need a
-  push, which happens after the review gate.
+- **The installer was first built by CI**: Inno Setup isn't installed on
+  the test machine (installing it means downloading software, which wasn't
+  asked for). CI's build was tested after the review's push, in silent mode
+  (`/SILENT`; the only prompt was Windows' administrator prompt), and so
+  was its uninstaller.
+- **The tag and the release wait for the license** (decided at the
+  review).
 - **Release tags are `v<version>`**: the spec says `v1.0.0`; the template's
   release job only knew `1.0.0`, so it was changed rather than the tag.
 - **macOS package name** stays the template's
@@ -196,6 +195,9 @@ clang-format and gersemi report no changes.
 - **Install Inno Setup on this machine?** It would let the installer be
   built and tested before a push (`winget install JRSoftware.InnoSetup`, or
   from jrsoftware.org). Without it, CI's build is the first.
+- **The installer isn't code-signed**, so SmartScreen warns on a downloaded
+  copy (INSTALL.md says what to do). Signing needs a certificate, which
+  costs money.
 - **The release is a draft** in a private repository: publish it as soon
   as it's checked, or keep it a draft until the license is decided?
 - **The test profile now runs at 1080p60** (the backup has the old one).

@@ -318,8 +318,8 @@ A builder starting a phase first reads `docs/BUILDER-NOTES.md`, the previous pha
 - [x] On the test machine at 1920×1080, 60 fps: three Ink/ASCII instances on three sources run with no lagged or skipped frames in OBS's stats; one Every Glyph instance does the same (measured: 60 s recordings with NVENC, 0 lagged and 0 skipped frames in both, and with three Fever instances)
 - [x] Adding and removing a filter 100 times leaves "Number of memory leaks: 0" in the OBS log at exit (measured: 100 times through OBS's Filters window, and 400 through the API)
 - [x] Settings survive an OBS restart; instances on different sources stay independent (measured: three filters' settings, a captured palette included, identical after a restart and each picture pixel-identical; changing one changes only its own source)
-- [ ] Windows installer and zip, Linux .deb and tarball, macOS .pkg from CI; install and uninstall tested on Windows and Linux by following Install exactly (done before the push: the installer script and CI wiring, the Windows zip and the Linux .deb and tarball tested by following Install; left: CI's packages with Phase 5's changes, and the installer built and tested)
-- [ ] `README.md` and `docs/INSTALL.md` final; `v1.0.0` tagged with a GitHub Release (README and INSTALL final, version 1.0.0; left: the tag and the release, after the Phase 5 review)
+- [x] Windows installer and zip, Linux .deb and tarball, macOS .pkg from CI; install and uninstall tested on Windows and Linux by following Install exactly (measured: every package from CI on commit `a755cc5`; CI's installer, zip, .deb and tarball installed, loaded in OBS, uninstalled cleanly, with OBS keeping the filters' settings; the macOS .pkg built, not tested)
+- [ ] `README.md` and `docs/INSTALL.md` final; `v1.0.0` tagged with a GitHub Release (README and INSTALL final, version 1.0.0; left: the license, then the tag and the release)
 
 ## Test assets
 

@@ -78,6 +78,10 @@ layout (`.../obs-studio/plugins/<plugin>/bin/<plugin>.so`) is not used.
 
 **Tools → Plugin Manager** lists Glyphnotic with its version.
 
+The installer isn't code-signed, so Windows SmartScreen may say "Windows
+protected your PC" when you run a downloaded copy: choose **More info →
+Run anyway**, or use the zip.
+
 Portable OBS ignores `C:\ProgramData`: unzip the zip into the `plugins`
 folder inside OBS's own folder (create it if needed), so that it contains
 `plugins\glyphnotic\glyphnotic.dll`.
