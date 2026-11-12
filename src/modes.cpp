@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 Don Liggett
+
 // Glyphnotic: per-mode settings, properties, defaults and looks.
 
 #include "modes.hpp"

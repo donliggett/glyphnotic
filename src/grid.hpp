@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 Don Liggett
+
 // Glyphnotic: grid geometry (no libobs dependency, unit-tested).
 
 #pragma once

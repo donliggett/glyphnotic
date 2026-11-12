@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 Don Liggett
+
 // Glyphnotic: the looks (named presets). No libobs dependency.
 //
 // A look sets every setting it controls: the character set, the motion

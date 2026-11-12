@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 Don Liggett
+
 // Glyphnotic: shared shader code, included by the pass effects.
 //
 // Every pass draws one full-target sprite (uv 0..1). A fragment finds its

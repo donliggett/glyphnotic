@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 Don Liggett
+
 // Glyphnotic pass: Draw (source resolution), into OBS's render target.
 //
 // Each pixel finds its cell, reads the shown glyph's bit from the atlas, and

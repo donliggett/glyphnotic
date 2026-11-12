@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 Don Liggett
+
 // Glyphnotic pass: Capture (Console's Capture palette button, on request).
 //
 // Downscales the Sample pass output to about 160x90 for palette capture:

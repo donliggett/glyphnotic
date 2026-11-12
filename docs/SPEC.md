@@ -1,6 +1,6 @@
 # Glyphnotic — Build Spec
 
-Status: v1.0, built in Phases 0–5 (`docs/build-history/`). Repository private; license to be decided (see Licensing).
+Status: v1.0, built in Phases 0–5 (`docs/build-history/`). Licensed GPL-2.0-or-later (see Licensing); repository private.
 
 ## Overview
 
@@ -319,7 +319,7 @@ A builder starting a phase first reads `docs/BUILDER-NOTES.md`, the previous pha
 - [x] Adding and removing a filter 100 times leaves "Number of memory leaks: 0" in the OBS log at exit (measured: 100 times through OBS's Filters window, and 400 through the API)
 - [x] Settings survive an OBS restart; instances on different sources stay independent (measured: three filters' settings, a captured palette included, identical after a restart and each picture pixel-identical; changing one changes only its own source)
 - [x] Windows installer and zip, Linux .deb and tarball, macOS .pkg from CI; install and uninstall tested on Windows and Linux by following Install exactly (measured: every package from CI on commit `a755cc5`; CI's installer, zip, .deb and tarball installed, loaded in OBS, uninstalled cleanly, with OBS keeping the filters' settings; the macOS .pkg built, not tested)
-- [ ] `README.md` and `docs/INSTALL.md` final; `v1.0.0` tagged with a GitHub Release (README and INSTALL final, version 1.0.0; left: the license, then the tag and the release)
+- [ ] `README.md` and `docs/INSTALL.md` final; `v1.0.0` tagged with a GitHub Release (README and INSTALL final, version 1.0.0, licensed GPL-2.0-or-later; left: the tag and the release)
 
 ## Test assets
 
@@ -327,9 +327,9 @@ Test stills come from openly licensed footage (for example the Blender Foundatio
 
 ## Licensing
 
-- To be decided before any public release; the repository stays private until then.
-- The plugin links libobs, which is GPL-2.0-or-later. Distributing plugin binaries therefore requires a GPL-compatible license, and the eventual choice must be one.
-- The plugin template's license terms (reviewed in Phase 0): the template repository ships the GPL-2.0 license text, and its source files carry a "GPL version 2 or (at your option) any later version" notice. Glyphnotic keeps the template's CMake, CI and `plugin-support` files, so the eventual license must also be compatible with GPL-2.0-or-later, which the libobs requirement already implies. The template's `LICENSE` file was moved to `docs/licenses/obs-plugintemplate-GPL-2.0.txt` so that a root `LICENSE` isn't read as the decision; Glyphnotic's own new files carry no license header until it's made.
+- **GPL-2.0-or-later**, decided at the Phase 5 review (2026-11-11), before the `v1.0.0` tag. The root `LICENSE` holds the GPL version 2 text; Glyphnotic's own source files (`src/`, except the template's `plugin-support` files, and `data/effects/`) start with `SPDX-License-Identifier: GPL-2.0-or-later` and a copyright line. `LICENSE` is installed with the plugin's data, so every package carries it, and CI's source tarball goes with each release.
+- Why GPL: the plugin links libobs, which is GPL-2.0-or-later, so distributed binaries need a GPL-compatible license. GPL-2.0-or-later matches libobs, the plugin template and most OBS plugins. Packages may be sold or offered as donation-ware; buyers get the source and the GPL's rights with them.
+- The plugin template's license terms (reviewed in Phase 0): the template repository ships the GPL-2.0 license text, and its source files carry a "GPL version 2 or (at your option) any later version" notice. Glyphnotic keeps the template's CMake, CI and `plugin-support` files. The template's `LICENSE` file is kept as `docs/licenses/obs-plugintemplate-GPL-2.0.txt` (the same text as the root `LICENSE`).
 - The bundled font is public domain (see Font).
 
 ## Roadmap

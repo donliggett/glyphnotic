@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 Don Liggett
+
 // Glyphnotic: the motion settings' constants and formulas (docs/SPEC.md,
 // Motion). No libobs dependency; the shaders hold the per-cell logic.
 

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 Don Liggett
+
 // Glyphnotic: PSF1 font loading, character sets and the glyph atlas.
 //
 // This file has no libobs dependency, so the unit tests in tests/unit build

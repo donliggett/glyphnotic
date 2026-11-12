@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 Don Liggett
+
 // Glyphnotic: the shared filter core.
 //
 // One implementation, registered once per drawing mode (type_data carries

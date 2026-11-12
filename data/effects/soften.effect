@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 Don Liggett
+
 // Glyphnotic pass: Soften, horizontal half (source resolution).
 //
 // Soften is a Gaussian blur with sigma in source pixels, on the filter's

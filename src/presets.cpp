@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 Don Liggett
+
 // Glyphnotic: the looks (docs/SPEC.md, Looks; final values from Phase 4's
 // tuning, docs/LOOKS.md).
 

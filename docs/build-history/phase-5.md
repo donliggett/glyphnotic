@@ -13,10 +13,12 @@ Date: 2026-11-11. Plugin version 1.0.0. Built against OBS Studio 33.0.1.
 | Windows installer and zip, Linux .deb and tarball, macOS .pkg from CI; install and uninstall tested on Windows and Linux by following Install exactly | **Done after the review's push** (commit `a755cc5`). CI built every package: on the push to `main` (run 43149732497) the Windows zip and installer and the Linux .deb and tarball, and on a manual run (43149744182) the same plus `glyphnotic-1.0.0-macos-universal.pkg` (not tested: macOS may work). CI's installer installed to `C:\ProgramData\obs-studio\plugins\glyphnotic\` and registered "Glyphnotic (OBS Studio plugin)" 1.0.0 under Installed apps; OBS loaded it with all 20 test filters and 0 leaks; its uninstaller removed the folder and the entry, and OBS then started without it, keeping the filters. CI's zip, unzipped as Install says, loaded the same. CI's .deb and tarball passed all 27 checks of `install-check.sh`. Before the push the same tests ran on locally built packages (below). |
 | `README.md` and `docs/INSTALL.md` final; `v1.0.0` tagged with a GitHub Release | **Partly.** README and INSTALL are final, the version is 1.0.0, and CI now makes a draft release for a `v1.0.0` tag. The tag and the release are publishing steps, left for after the review. |
 
-What's left: choose the license (and any donation links) and add them;
-then tag `v1.0.0`, push the tag, and check the draft release CI makes.
-Decided at the review: the license goes in before the tag, so 1.0.0's
-source and packages carry it.
+**License, decided at the review: GPL-2.0-or-later**, added before the
+tag so 1.0.0's source and packages carry it: the root `LICENSE` (GPL
+version 2 text), installed with the plugin's data in every package; an SPDX
+header and copyright line on Glyphnotic's own source and effect files; the
+README's and spec's licensing sections. What's left: tag `v1.0.0`, push the
+tag, check the draft release CI makes; waiting for the go-ahead.
 
 ## What was built
 

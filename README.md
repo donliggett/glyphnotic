@@ -60,6 +60,12 @@ restores its values.
 
 ## License
 
-Contains GPL-2.0 code from the OBS plugin template, and links libobs
-(GPL-2.0-or-later), so Glyphnotic's own license, still to be decided, will be
-GPL-compatible. The repository and its releases stay private until then.
+Glyphnotic is free software, licensed under the **GNU General Public License,
+version 2 or (at your option) any later version** (GPL-2.0-or-later); see
+[LICENSE](LICENSE). It's distributed in the hope that it will be useful, but
+without any warranty. Every package includes the license, and each release
+has the matching source (`glyphnotic-<version>-source.tar.xz`).
+
+Copyright (C) 2026 Don Liggett. Glyphnotic links libobs (GPL-2.0-or-later)
+and keeps the OBS plugin template's build files (GPL-2.0-or-later). The
+bundled font is public domain.
